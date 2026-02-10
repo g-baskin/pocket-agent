@@ -208,31 +208,19 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * Schedule task tool definition
+ * Create routine tool definition
+ * Routines send a prompt to the LLM at the scheduled time - the LLM then executes it
  */
-export function getScheduleTaskToolDefinition() {
+export function getCreateRoutineToolDefinition() {
   return {
-    name: 'schedule_task',
-    description: `Create a scheduled routine where the agent performs an ACTION.
-
-Use this for tasks where the agent should DO something (check weather, summarize news, etc).
-For simple reminders, use create_reminder instead.
-
-Schedule formats:
-- Recurring intervals: "30m", "2h", "1d"
-- Cron expressions: "0 9 * * *" (minute hour day month weekday)
-- One-time: "in 10 minutes", "tomorrow 3pm"
-
-IMPORTANT: The 'prompt' field is an INSTRUCTION that will be sent to a future LLM instance.
-Write it as a command, not as formatted output.
-- GOOD: "Check the weather and tell the user"
-- BAD: "Good morning! Here's your weather: ☀️"`,
+    name: 'create_routine',
+    description: 'Schedule a prompt for the LLM to execute at a specific time. When triggered, the prompt is sent to the agent who will perform the requested action (browse web, check APIs, research, etc). For simple notifications with no LLM action, use create_reminder instead.',
     input_schema: {
       type: 'object' as const,
       properties: {
         name: {
           type: 'string',
-          description: 'Unique name for this scheduled task (e.g., "morning_weather")',
+          description: 'Unique name for this routine (e.g., "morning_weather")',
         },
         schedule: {
           type: 'string',
@@ -240,11 +228,7 @@ Write it as a command, not as formatted output.
         },
         prompt: {
           type: 'string',
-          description: 'Instruction for the future LLM. Write as a command like "Check the weather" or "Summarize today\'s news". NOT formatted output.',
-        },
-        channel: {
-          type: 'string',
-          description: 'Where to send: "desktop" or "telegram" (default: desktop)',
+          description: 'The prompt sent to the LLM when triggered. Write as an instruction: "Check the weather in KL and tell me", "Summarize today\'s tech news", "Research competitors for X".',
         },
       },
       required: ['name', 'schedule', 'prompt'],
@@ -253,22 +237,21 @@ Write it as a command, not as formatted output.
 }
 
 /**
- * Schedule task tool handler
- * Now supports natural language scheduling in addition to cron
+ * Create routine tool handler
+ * Supports natural language scheduling in addition to cron
  */
-export async function handleScheduleTaskTool(input: unknown): Promise<string> {
-  const { name, schedule, prompt, channel } = input as {
+export async function handleCreateRoutineTool(input: unknown): Promise<string> {
+  const { name, schedule, prompt } = input as {
     name: string;
     schedule: string;
     prompt: string;
-    channel?: string;
   };
 
   if (!name || !schedule || !prompt) {
     return JSON.stringify({ error: 'Missing required fields: name, schedule, prompt' });
   }
 
-  console.log(`[SchedulerTool] Creating task: ${name} (${schedule})`);
+  console.log(`[Scheduler] Creating routine: ${name} (${schedule})`);
 
   // Parse the schedule string
   const parsed = parseSchedule(schedule);
@@ -315,29 +298,8 @@ export async function handleScheduleTaskTool(input: unknown): Promise<string> {
     // Auto-enable delete-after for one-time "at" jobs
     const deleteAfterRun = parsed.type === 'at' ? 1 : 0;
 
-    // Determine default channel: use telegram if configured, otherwise desktop
-    let targetChannel = channel;
-    if (!targetChannel) {
-      // Check if Telegram is configured by looking for activeChatIds in settings
-      const telegramSetting = db.prepare(
-        "SELECT value FROM settings WHERE key = 'telegram.activeChatIds'"
-      ).get() as { value: string } | undefined;
-
-      if (telegramSetting?.value) {
-        try {
-          const chatIds = JSON.parse(telegramSetting.value);
-          if (Array.isArray(chatIds) && chatIds.length > 0) {
-            targetChannel = 'telegram';
-          }
-        } catch {
-          // Invalid JSON, fall through to desktop
-        }
-      }
-
-      if (!targetChannel) {
-        targetChannel = 'desktop';
-      }
-    }
+    // Channel is always 'desktop' - routing broadcasts to all configured channels
+    const targetChannel = 'desktop';
 
     const nextRunAt = calculateNextRun(
       parsed.type,
@@ -354,22 +316,22 @@ export async function handleScheduleTaskTool(input: unknown): Promise<string> {
         UPDATE cron_jobs SET
           schedule_type = ?, schedule = ?, run_at = ?, interval_ms = ?,
           prompt = ?, channel = ?, enabled = 1,
-          delete_after_run = ?, next_run_at = ?, session_id = ?,
+          delete_after_run = ?, next_run_at = ?, session_id = ?, job_type = ?,
           updated_at = datetime('now')
         WHERE name = ?
       `).run(
         parsed.type, parsed.schedule || null, parsed.runAt || null, parsed.intervalMs || null,
-        prompt, targetChannel, deleteAfterRun, nextRunAt, sessionId, name
+        prompt, targetChannel, deleteAfterRun, nextRunAt, sessionId, 'routine', name
       );
     } else {
       db.prepare(`
         INSERT INTO cron_jobs (
           name, schedule_type, schedule, run_at, interval_ms,
-          prompt, channel, enabled, delete_after_run, next_run_at, session_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          prompt, channel, enabled, delete_after_run, next_run_at, session_id, job_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
       `).run(
         name, parsed.type, parsed.schedule || null, parsed.runAt || null, parsed.intervalMs || null,
-        prompt, targetChannel, deleteAfterRun, nextRunAt, sessionId
+        prompt, targetChannel, deleteAfterRun, nextRunAt, sessionId, 'routine'
       );
     }
 
@@ -385,10 +347,10 @@ export async function handleScheduleTaskTool(input: unknown): Promise<string> {
       scheduleDesc = `cron: ${parsed.schedule}`;
     }
 
-    console.log(`[SchedulerTool] Task created: ${name} (${parsed.type})`);
+    console.log(`[Scheduler] Routine created: ${name} (${parsed.type})`);
     return JSON.stringify({
       success: true,
-      message: `Scheduled task "${name}" created`,
+      message: `Routine "${name}" created`,
       name,
       type: parsed.type,
       schedule: scheduleDesc,
@@ -399,32 +361,19 @@ export async function handleScheduleTaskTool(input: unknown): Promise<string> {
     });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[SchedulerTool] Failed to create task: ${errorMsg}`);
+    console.error(`[Scheduler] Failed to create routine: ${errorMsg}`);
     return JSON.stringify({ error: errorMsg });
   }
 }
 
 /**
  * Create reminder tool definition
+ * Reminders are simple notifications - no LLM processing, just display the message
  */
 export function getCreateReminderToolDefinition() {
   return {
     name: 'create_reminder',
-    description: `Create a simple reminder to notify the user about something.
-
-Use this when the user says "remind me to..." or "don't let me forget to..."
-For action-based tasks (check weather, etc), use schedule_task instead.
-
-Schedule formats:
-- One-time: "in 10 minutes", "tomorrow 3pm", "monday 9am"
-- Recurring: "30m", "2h", or cron "0 9 * * *"
-
-IMPORTANT: The 'reminder' field is the FINAL MESSAGE shown to the user.
-Compose a friendly, complete reminder message - it will be displayed directly with NO further LLM processing.
-- GOOD: "Hey Ken! Time to take a shower 🚿"
-- GOOD: "Don't forget to call mom! 📱"
-- BAD: "take a shower" (too minimal)
-- BAD: "Remind Ken to take a shower" (this is an instruction, not a message)`,
+    description: 'Create a simple reminder notification (NO LLM processing). The message is displayed exactly as written. Use for: "remind me to X", "don\'t forget Y". For tasks requiring LLM action (research, checking weather), use create_routine instead. NOT for todo items - use task_add for todos.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -438,11 +387,7 @@ Compose a friendly, complete reminder message - it will be displayed directly wi
         },
         reminder: {
           type: 'string',
-          description: 'The final message to display. Examples: "Hey Ken! Time to take a shower 🚿", "Don\'t forget to call mom! 📱". Compose a friendly, complete message.',
-        },
-        channel: {
-          type: 'string',
-          description: 'Where to send: "desktop" or "telegram" (default: desktop)',
+          description: 'The exact message to display. Examples: "Hey Ken! Time to take a shower 🚿", "Don\'t forget to call mom! 📱". Write a friendly, complete message.',
         },
       },
       required: ['name', 'schedule', 'reminder'],
@@ -454,18 +399,17 @@ Compose a friendly, complete reminder message - it will be displayed directly wi
  * Create reminder tool handler
  */
 export async function handleCreateReminderTool(input: unknown): Promise<string> {
-  const { name, schedule, reminder, channel } = input as {
+  const { name, schedule, reminder } = input as {
     name: string;
     schedule: string;
     reminder: string;
-    channel?: string;
   };
 
   if (!name || !schedule || !reminder) {
     return JSON.stringify({ error: 'Missing required fields: name, schedule, reminder' });
   }
 
-  console.log(`[SchedulerTool] Creating reminder: ${name} (${schedule})`);
+  console.log(`[Scheduler] Creating reminder: ${name} (${schedule})`);
 
   // Parse the schedule string
   const parsed = parseSchedule(schedule);
@@ -512,28 +456,8 @@ export async function handleCreateReminderTool(input: unknown): Promise<string> 
     // Auto-enable delete-after for one-time "at" jobs
     const deleteAfterRun = parsed.type === 'at' ? 1 : 0;
 
-    // Determine default channel: use telegram if configured, otherwise desktop
-    let targetChannel = channel;
-    if (!targetChannel) {
-      const telegramSetting = db.prepare(
-        "SELECT value FROM settings WHERE key = 'telegram.activeChatIds'"
-      ).get() as { value: string } | undefined;
-
-      if (telegramSetting?.value) {
-        try {
-          const chatIds = JSON.parse(telegramSetting.value);
-          if (Array.isArray(chatIds) && chatIds.length > 0) {
-            targetChannel = 'telegram';
-          }
-        } catch {
-          // Invalid JSON, fall through to desktop
-        }
-      }
-
-      if (!targetChannel) {
-        targetChannel = 'desktop';
-      }
-    }
+    // Channel is always 'desktop' - routing broadcasts to all configured channels
+    const targetChannel = 'desktop';
 
     const nextRunAt = calculateNextRun(
       parsed.type,
@@ -581,7 +505,7 @@ export async function handleCreateReminderTool(input: unknown): Promise<string> 
       scheduleDesc = `cron: ${parsed.schedule}`;
     }
 
-    console.log(`[SchedulerTool] Reminder created: ${name} (${parsed.type})`);
+    console.log(`[Scheduler] Reminder created: ${name} (${parsed.type})`);
     return JSON.stringify({
       success: true,
       message: `Reminder "${name}" created`,
@@ -595,18 +519,18 @@ export async function handleCreateReminderTool(input: unknown): Promise<string> 
     });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[SchedulerTool] Failed to create reminder: ${errorMsg}`);
+    console.error(`[Scheduler] Failed to create reminder: ${errorMsg}`);
     return JSON.stringify({ error: errorMsg });
   }
 }
 
 /**
- * List scheduled tasks tool definition
+ * List routines tool definition
  */
-export function getListScheduledTasksToolDefinition() {
+export function getListRoutinesToolDefinition() {
   return {
-    name: 'list_scheduled_tasks',
-    description: 'List all scheduled tasks and reminders. Shows name, schedule, and status.',
+    name: 'list_routines',
+    description: 'List all scheduled routines (LLM tasks) and reminders (simple notifications). Shows name, type, schedule, and next run time. NOT for todo items - use task_list for todos.',
     input_schema: {
       type: 'object' as const,
       properties: {},
@@ -616,9 +540,39 @@ export function getListScheduledTasksToolDefinition() {
 }
 
 /**
- * List scheduled tasks handler
+ * Format schedule for display based on schedule_type
  */
-export async function handleListScheduledTasksTool(): Promise<string> {
+function formatScheduleDisplay(job: {
+  schedule_type?: string;
+  schedule: string | null;
+  run_at?: string | null;
+  interval_ms?: number | null;
+}): string {
+  const scheduleType = job.schedule_type || 'cron';
+
+  if (scheduleType === 'cron' && job.schedule) {
+    return `cron: ${job.schedule}`;
+  }
+  if (scheduleType === 'at' && job.run_at) {
+    const formatted = formatDateTime(job.run_at);
+    return `at: ${formatted || job.run_at}`;
+  }
+  if (scheduleType === 'every' && job.interval_ms) {
+    return `every ${formatDuration(job.interval_ms)}`;
+  }
+
+  // Fallback: try to show whatever is available
+  if (job.schedule) return job.schedule;
+  if (job.run_at) return `at: ${formatDateTime(job.run_at) || job.run_at}`;
+  if (job.interval_ms) return `every ${formatDuration(job.interval_ms)}`;
+
+  return 'unknown';
+}
+
+/**
+ * List routines handler
+ */
+export async function handleListRoutinesTool(): Promise<string> {
   const scheduler = getScheduler();
 
   if (!scheduler) {
@@ -641,7 +595,8 @@ export async function handleListScheduledTasksTool(): Promise<string> {
     tasks: jobs.map(job => ({
       name: job.name,
       type: job.job_type || 'routine',
-      schedule: job.schedule,
+      schedule: formatScheduleDisplay(job),
+      next_run: job.next_run_at ? formatDateTime(job.next_run_at) : null,
       prompt: job.prompt,
       channel: job.channel,
       enabled: job.enabled,
@@ -650,18 +605,18 @@ export async function handleListScheduledTasksTool(): Promise<string> {
 }
 
 /**
- * Delete scheduled task tool definition
+ * Delete routine tool definition
  */
-export function getDeleteScheduledTaskToolDefinition() {
+export function getDeleteRoutineToolDefinition() {
   return {
-    name: 'delete_scheduled_task',
-    description: 'Delete a scheduled task or reminder by name.',
+    name: 'delete_routine',
+    description: 'Delete a scheduled routine or reminder by name. NOT for todo items - use task_delete for todos.',
     input_schema: {
       type: 'object' as const,
       properties: {
         name: {
           type: 'string',
-          description: 'Name of the task to delete',
+          description: 'Name of the routine to delete',
         },
       },
       required: ['name'],
@@ -670,9 +625,9 @@ export function getDeleteScheduledTaskToolDefinition() {
 }
 
 /**
- * Delete scheduled task handler
+ * Delete routine handler
  */
-export async function handleDeleteScheduledTaskTool(input: unknown): Promise<string> {
+export async function handleDeleteRoutineTool(input: unknown): Promise<string> {
   const scheduler = getScheduler();
 
   if (!scheduler) {
@@ -682,21 +637,21 @@ export async function handleDeleteScheduledTaskTool(input: unknown): Promise<str
   const { name } = input as { name: string };
 
   if (!name) {
-    return JSON.stringify({ error: 'Task name is required' });
+    return JSON.stringify({ error: 'Routine name is required' });
   }
 
   const success = scheduler.deleteJob(name);
 
   if (success) {
-    console.log(`[SchedulerTool] Deleted task: ${name}`);
+    console.log(`[Scheduler] Deleted routine: ${name}`);
     return JSON.stringify({
       success: true,
-      message: `Task "${name}" deleted`,
+      message: `Routine "${name}" deleted`,
     });
   } else {
     return JSON.stringify({
       success: false,
-      error: `Task "${name}" not found`,
+      error: `Routine "${name}" not found`,
     });
   }
 }
@@ -707,20 +662,20 @@ export async function handleDeleteScheduledTaskTool(input: unknown): Promise<str
 export function getSchedulerTools() {
   return [
     {
-      ...getScheduleTaskToolDefinition(),
-      handler: handleScheduleTaskTool,
+      ...getCreateRoutineToolDefinition(),
+      handler: handleCreateRoutineTool,
     },
     {
       ...getCreateReminderToolDefinition(),
       handler: handleCreateReminderTool,
     },
     {
-      ...getListScheduledTasksToolDefinition(),
-      handler: handleListScheduledTasksTool,
+      ...getListRoutinesToolDefinition(),
+      handler: handleListRoutinesTool,
     },
     {
-      ...getDeleteScheduledTaskToolDefinition(),
-      handler: handleDeleteScheduledTaskTool,
+      ...getDeleteRoutineToolDefinition(),
+      handler: handleDeleteRoutineTool,
     },
   ];
 }

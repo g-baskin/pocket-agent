@@ -7,7 +7,7 @@
   <title>Settings</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-primary: #0a0a0b;
@@ -55,10 +55,10 @@
     }
 
     header h1 {
-      font-family: 'Sora', sans-serif;
-      font-size: 14px;
+      font-family: 'Pixelify Sans', sans-serif;
+      font-size: 16px;
       font-weight: 700;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
     }
 
     header h1 span {
@@ -167,6 +167,7 @@
       padding: 10px 20px;
       color: var(--text-secondary);
       cursor: pointer;
+      font-family: 'Pixelify Sans', sans-serif;
       font-size: 13px;
       font-weight: 500;
       transition: all 0.15s ease;
@@ -225,6 +226,7 @@
     }
 
     .section-title {
+      font-family: 'Pixelify Sans', sans-serif;
       font-size: 16px;
       font-weight: 600;
       margin-bottom: 4px;
@@ -469,6 +471,20 @@
       font-size: 10px;
     }
 
+    .badge-required {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      background: var(--error);
+      color: white;
+      margin-left: 6px;
+    }
+
     .oauth-btn {
       display: inline-flex;
       align-items: center;
@@ -539,6 +555,7 @@
     }
 
     .card-title {
+      font-family: 'Pixelify Sans', sans-serif;
       font-size: 13px;
       font-weight: 600;
       margin-bottom: 12px;
@@ -669,7 +686,7 @@
     .toast-message {
       color: var(--text-primary);
       line-height: 1.4;
-      white-space: nowrap;
+      word-wrap: break-word;
     }
 
     .toast.exiting {
@@ -818,6 +835,21 @@
       color: var(--text-primary);
     }
 
+    .key-input button.delete-btn {
+      display: none;
+      padding: 6px 8px;
+    }
+
+    .key-input button.delete-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .key-input button.delete-btn.visible {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
 
     /* Compact Auth Boxes */
     .auth-box {
@@ -850,6 +882,7 @@
     }
 
     .auth-option-title {
+      font-family: 'Pixelify Sans', sans-serif;
       font-size: 13px;
       font-weight: 500;
     }
@@ -916,8 +949,8 @@
   <header>
     <h1><span>Settings</span></h1>
     <div class="header-actions">
-      <button class="secondary" onclick="window.close()">Done</button>
-      <button id="reboot-btn" class="reboot" onclick="restartAgent()" disabled>Reboot</button>
+      <button class="secondary" onclick="playNormalClick(); window.close()">Done</button>
+      <button id="reboot-btn" class="reboot" onclick="playNormalClick(); restartAgent()" disabled>Reboot</button>
     </div>
   </header>
 
@@ -943,9 +976,9 @@
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         Browser
       </div>
-      <div class="nav-item" data-section="skills">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-        Superpowers
+      <div class="nav-item" data-section="pocket_cli">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8l4 4-4 4"/><line x1="13" y1="16" x2="17" y2="16"/></svg>
+        Pocket CLI
       </div>
       <div class="nav-item" data-section="updates">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
@@ -966,13 +999,13 @@
               <span class="auth-option-title">Login with Claude</span>
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span id="auth-status" class="auth-badge loading">checking...</span>
-                <button id="oauth-btn" class="oauth-btn" onclick="handleAuthAction()">Sign in</button>
+                <button id="oauth-btn" class="oauth-btn" onclick="playNormalClick(); handleAuthAction()">Sign in</button>
               </div>
             </div>
             <div id="oauth-code-section" style="display: none; margin-top: 10px;">
               <div class="key-input">
                 <input type="text" id="oauth-code" placeholder="Paste authorization code...">
-                <button onclick="completeOAuth()">Submit</button>
+                <button onclick="playNormalClick(); completeOAuth()">Submit</button>
               </div>
             </div>
           </div>
@@ -986,7 +1019,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="auth-api-key" placeholder="sk-ant-...">
-              <button onclick="saveApiKey()">Save</button>
+              <button class="delete-btn" id="auth-api-key-delete" onclick="playNormalClick(); deleteKey('anthropic.apiKey', 'auth-api-key')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveApiKey()">Save</button>
             </div>
           </div>
         </div>
@@ -1000,7 +1034,23 @@
             </div>
             <div class="key-input">
               <input type="password" id="moonshot.apiKey" placeholder="sk-...">
-              <button onclick="validateKey('moonshot')">Test</button>
+              <button class="delete-btn" id="moonshot.apiKey-delete" onclick="playNormalClick(); deleteKey('moonshot.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); validateKey('moonshot')">Test</button>
+            </div>
+          </div>
+        </div>
+
+        <h3 class="subsection-title" style="margin-top: 24px; margin-bottom: 12px; font-size: 14px; font-weight: 600; color: var(--text-secondary);">GLM (Z.AI)</h3>
+        <div class="keys-table" id="glm-api-key-section">
+          <div class="key-row">
+            <div class="key-info">
+              <span class="key-name">API Key</span>
+              <a href="https://z.ai/manage-apikey/apikey-list" target="_blank" class="key-link">z.ai</a>
+            </div>
+            <div class="key-input">
+              <input type="password" id="glm.apiKey" placeholder="...">
+              <button class="delete-btn" id="glm.apiKey-delete" onclick="playNormalClick(); deleteKey('glm.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); validateKey('glm')">Test</button>
             </div>
           </div>
         </div>
@@ -1010,6 +1060,7 @@
           <div class="setting-row">
             <label>Model</label>
             <select id="agent.model">
+              <option value="claude-opus-4-6">Opus 4.6</option>
               <option value="claude-opus-4-5-20251101">Opus 4.5</option>
               <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
               <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
@@ -1040,7 +1091,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="anthropic.apiKey" placeholder="sk-ant-...">
-              <button onclick="validateKey('anthropic')">Test</button>
+              <button class="delete-btn" id="anthropic.apiKey-delete" onclick="playNormalClick(); deleteKey('anthropic.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); validateKey('anthropic')">Test</button>
             </div>
           </div>
 
@@ -1051,7 +1103,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="openai.apiKey" placeholder="sk-...">
-              <button onclick="validateKey('openai')">Test</button>
+              <button class="delete-btn" id="openai.apiKey-delete" onclick="playNormalClick(); deleteKey('openai.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); validateKey('openai')">Test</button>
             </div>
           </div>
 
@@ -1062,7 +1115,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="gemini.apiKey" placeholder="AI...">
-              <button onclick="saveKey('gemini.apiKey')">Save</button>
+              <button class="delete-btn" id="gemini.apiKey-delete" onclick="playNormalClick(); deleteKey('gemini.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveKey('gemini.apiKey')">Save</button>
             </div>
           </div>
 
@@ -1073,7 +1127,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="google.placesApiKey" placeholder="AIza...">
-              <button onclick="saveKey('google.placesApiKey')">Save</button>
+              <button class="delete-btn" id="google.placesApiKey-delete" onclick="playNormalClick(); deleteKey('google.placesApiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveKey('google.placesApiKey')">Save</button>
             </div>
           </div>
 
@@ -1084,7 +1139,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="notion.apiKey" placeholder="secret_...">
-              <button onclick="saveKey('notion.apiKey')">Save</button>
+              <button class="delete-btn" id="notion.apiKey-delete" onclick="playNormalClick(); deleteKey('notion.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveKey('notion.apiKey')">Save</button>
             </div>
           </div>
 
@@ -1096,7 +1152,8 @@
             <div class="key-input">
               <input type="password" id="trello.apiKey" placeholder="API Key">
               <input type="password" id="trello.token" placeholder="Token" style="margin-left: 4px;">
-              <button onclick="saveTrelloKeys()">Save</button>
+              <button class="delete-btn" id="trello-delete" onclick="playNormalClick(); deleteTrelloKeys()"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveTrelloKeys()">Save</button>
             </div>
           </div>
 
@@ -1107,7 +1164,8 @@
             </div>
             <div class="key-input">
               <input type="password" id="elevenlabs.apiKey" placeholder="Your API key">
-              <button onclick="saveKey('elevenlabs.apiKey')">Save</button>
+              <button class="delete-btn" id="elevenlabs.apiKey-delete" onclick="playNormalClick(); deleteKey('elevenlabs.apiKey')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); saveKey('elevenlabs.apiKey')">Save</button>
             </div>
           </div>
         </div>
@@ -1121,7 +1179,7 @@
         <div class="settings-grid">
           <div class="setting-row">
             <label>Enable Telegram</label>
-            <div class="toggle" id="telegram.enabled-toggle" onclick="toggleSetting('telegram.enabled')"></div>
+            <div class="toggle" id="telegram.enabled-toggle" onclick="playNormalClick(); toggleSetting('telegram.enabled')"></div>
           </div>
         </div>
 
@@ -1133,16 +1191,26 @@
             </div>
             <div class="key-input">
               <input type="password" id="telegram.botToken" placeholder="123456:ABC-DEF...">
-              <button onclick="validateKey('telegram')">Test</button>
+              <button class="delete-btn" id="telegram.botToken-delete" onclick="playNormalClick(); deleteKey('telegram.botToken')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+              <button onclick="playNormalClick(); validateKey('telegram')">Test</button>
             </div>
           </div>
-          <div class="setting-row">
-            <label>Allowed Users</label>
-            <input type="text" id="telegram.allowedUserIds" placeholder="123456789, ..." style="width: 180px;">
+          <div class="setting-row" style="flex-direction: column; align-items: stretch; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="display: flex; align-items: center; margin: 0;">Allowed Users <span class="badge-required">Required</span></label>
+              <a href="https://t.me/userinfobot" target="_blank" class="key-link">@userinfobot →</a>
+            </div>
+            <div class="key-input">
+              <input type="text" id="telegram.allowedUserIds" placeholder="e.g. 918273645">
+              <button onclick="playNormalClick(); saveTelegramSetting('telegram.allowedUserIds')">Save</button>
+            </div>
           </div>
-          <div class="setting-row">
+          <div class="setting-row" style="flex-direction: column; align-items: stretch; gap: 6px;">
             <label>Default Chat</label>
-            <input type="text" id="telegram.defaultChatId" placeholder="Chat ID" style="width: 180px;">
+            <div class="key-input">
+              <input type="text" id="telegram.defaultChatId" placeholder="e.g. -100123456789">
+              <button onclick="playNormalClick(); saveTelegramSetting('telegram.defaultChatId')">Save</button>
+            </div>
           </div>
         </div>
       </section>
@@ -1182,37 +1250,115 @@
       <!-- Browser Section -->
       <section id="browser" class="section">
         <h2 class="section-title">Browser Magic</h2>
-        <p class="section-desc">Let me browse the web and click around for you!</p>
+        <p class="section-desc">Control your browser to browse, click, fill forms, and more!</p>
+
+        <!-- Capability info -->
+        <div class="info-box" style="margin-bottom: 16px; padding: 12px; background: var(--bg-tertiary); border-radius: var(--radius-sm); border: 1px solid var(--border);">
+          <div style="display: flex; align-items: flex-start; gap: 10px;">
+            <span style="font-size: 16px;">🌐</span>
+            <div style="font-size: 11px; color: var(--text-secondary); line-height: 1.5;">
+              <strong style="color: var(--text-primary);">What this enables:</strong><br>
+              Navigate websites, click buttons, fill forms, take screenshots, and interact with your logged-in accounts. The AI controls your real browser session.
+            </div>
+          </div>
+        </div>
 
         <div class="settings-grid">
           <div class="setting-row">
             <label>Enable Browser</label>
-            <div class="toggle" id="browser.enabled-toggle" onclick="toggleSetting('browser.enabled')"></div>
+            <div class="toggle" id="browser.enabled-toggle" onclick="playNormalClick(); toggleSetting('browser.enabled')"></div>
+          </div>
+          <div class="setting-row">
+            <label>Use My Browser</label>
+            <div class="toggle" id="browser.useMyBrowser-toggle" onclick="playNormalClick(); toggleSetting('browser.useMyBrowser')"></div>
           </div>
         </div>
 
-        <div class="settings-grid" id="browser-config" style="margin-top: 10px;">
+        <div class="settings-grid" id="browser-config" style="margin-top: 12px;">
           <div class="setting-row">
-            <label>CDP URL</label>
-            <input type="text" id="browser.cdpUrl" placeholder="http://localhost:9222" style="width: 180px;">
+            <label>Browser</label>
+            <select id="browser-selector" style="width: 140px;">
+              <option value="">Select browser...</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Launch</label>
+            <button id="browser-launch-btn" onclick="playNormalClick(); launchBrowserWithCdp()" class="skills-setup-btn" style="margin: 0; width: 140px;">
+              Launch Browser
+            </button>
+          </div>
+          <div class="setting-row">
+            <label>Status</label>
+            <div id="browser-status" class="status info" style="margin: 0;">Not connected</div>
+          </div>
+          <div class="setting-row">
+            <label>Connection</label>
+            <button id="browser-test-btn" onclick="playNormalClick(); testBrowserConnection()" class="skills-setup-btn" style="margin: 0; width: 140px;">
+              Test Connection
+            </button>
+          </div>
+        </div>
+
+        <!-- Advanced settings (collapsed by default) -->
+        <details style="margin-top: 16px;">
+          <summary style="cursor: pointer; font-size: 11px; color: var(--text-muted); user-select: none;">Advanced settings</summary>
+          <div class="settings-grid" style="margin-top: 10px;">
+            <div class="setting-row">
+              <label>CDP URL</label>
+              <input type="text" id="browser.cdpUrl" placeholder="http://localhost:9222" style="width: 180px;">
+            </div>
+            <div class="setting-row">
+              <label>Port</label>
+              <input type="number" id="browser-port" value="9222" min="1024" max="65535" style="width: 80px;">
+            </div>
+          </div>
+        </details>
+
+        <!-- Warning box -->
+        <div class="info-box" style="margin-top: 16px; padding: 10px; background: rgba(249, 115, 22, 0.1); border-radius: var(--radius-sm); border: 1px solid rgba(249, 115, 22, 0.3);">
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <span style="font-size: 12px;">⚠️</span>
+            <div style="font-size: 10px; color: var(--text-secondary); line-height: 1.4;">
+              The AI can access your logged-in accounts and perform actions. Some actions may be irreversible.
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- Skills Section -->
-      <section id="skills" class="section">
-        <h2 class="section-title">Superpowers</h2>
-        <p class="section-desc">Unlock abilities like email, messaging, notes, and more!</p>
+      <!-- Pocket CLI Section -->
+      <section id="pocket_cli" class="section">
+        <h2 class="section-title">Pocket CLI</h2>
+        <p class="section-desc">Lets your AI interact with real services like Twitter, YouTube, Hacker News, Wikipedia, and more.</p>
 
         <div class="settings-grid">
           <div class="setting-row">
-            <label>Status</label>
-            <div id="skills-status-line" class="status info" style="margin: 0;">checking...</div>
+            <label>Auto-check for updates</label>
+            <div class="toggle" id="pocketCli.autoCheck-toggle" onclick="playNormalClick(); toggleSetting('pocketCli.autoCheck')"></div>
+          </div>
+        </div>
+
+        <div class="settings-grid" style="margin-top: 12px;">
+          <div class="setting-row">
+            <label>Current Version</label>
+            <span id="pocket-cli-version" class="key-link" style="font-size: 12px;">—</span>
           </div>
           <div class="setting-row">
-            <label>Configure</label>
-            <button onclick="openSkillsSetup()" class="skills-setup-btn" style="margin: 0;">Open Skills Lab</button>
+            <label>Status</label>
+            <div id="pocket-cli-status" class="status info" style="margin: 0;">Ready</div>
           </div>
+          <div class="setting-row">
+            <label>Actions</label>
+            <div style="display: flex; gap: 6px;">
+              <button id="pocket-cli-check-btn" onclick="playNormalClick(); checkPocketCliUpdates()" class="skills-setup-btn" style="margin: 0;">Check Now</button>
+              <button id="pocket-cli-install-btn" onclick="playNormalClick(); installPocketCli()" class="skills-setup-btn" style="margin: 0; display: none;">Install</button>
+              <button id="pocket-cli-update-btn" onclick="playNormalClick(); updatePocketCli()" class="skills-setup-btn" style="margin: 0; display: none; background: var(--accent); color: white; border-color: var(--accent);">Update</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="pocket-cli-info" class="info-box" style="margin-top: 12px; display: none;">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span id="pocket-cli-info-text"></span>
         </div>
       </section>
 
@@ -1224,7 +1370,7 @@
         <div class="settings-grid">
           <div class="setting-row">
             <label>Auto-check for updates</label>
-            <div class="toggle" id="updates.autoCheck-toggle" onclick="toggleSetting('updates.autoCheck')"></div>
+            <div class="toggle" id="updates.autoCheck-toggle" onclick="playNormalClick(); toggleSetting('updates.autoCheck')"></div>
           </div>
         </div>
 
@@ -1249,9 +1395,9 @@
           <div class="setting-row">
             <label>Actions</label>
             <div style="display: flex; gap: 6px;">
-              <button id="check-updates-btn" onclick="checkForUpdates()" class="skills-setup-btn" style="margin: 0;">Check Now</button>
-              <button id="download-update-btn" onclick="downloadUpdate()" class="skills-setup-btn" style="margin: 0; display: none;">Download</button>
-              <button id="install-update-btn" onclick="installUpdate()" class="skills-setup-btn" style="margin: 0; display: none; background: var(--accent); color: white; border-color: var(--accent);">Install & Restart</button>
+              <button id="check-updates-btn" onclick="playNormalClick(); checkForUpdates()" class="skills-setup-btn" style="margin: 0;">Check Now</button>
+              <button id="download-update-btn" onclick="playNormalClick(); downloadUpdate()" class="skills-setup-btn" style="margin: 0; display: none;">Download</button>
+              <button id="install-update-btn" onclick="playNormalClick(); installUpdate()" class="skills-setup-btn" style="margin: 0; display: none; background: var(--accent); color: white; border-color: var(--accent);">Install & Restart</button>
             </div>
           </div>
         </div>
@@ -1264,11 +1410,38 @@
     </main>
   </div>
 
+  <!-- Click Sound -->
+  <audio id="normal-click-sound" preload="auto" src="../assets/normal-click.mp3"></audio>
+
   <script>
+    // Click sound
+    const normalClickSound = document.getElementById('normal-click-sound');
+    function playNormalClick() {
+      if (normalClickSound) {
+        normalClickSound.currentTime = 0;
+        normalClickSound.play().catch(() => {});
+      }
+    }
+    // Play click sound on any interactive element
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('button, .toggle, .tab, .nav-item, select')) {
+        playNormalClick();
+      }
+    });
+
     // State
     let settings = {};
     let pendingChanges = {};
     let validationStatus = {};
+
+    // Handle external links - open in system browser, not Electron
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a[href]');
+      if (link && link.href && (link.target === '_blank' || link.href.startsWith('http'))) {
+        e.preventDefault();
+        window.pocketAgent.openExternal(link.href);
+      }
+    });
 
     // Initialize
     window.addEventListener('DOMContentLoaded', async () => {
@@ -1276,7 +1449,8 @@
       await loadAppVersion();
       setupNavigation();
       setupAutoSave();
-      loadSkillsSummary();
+      initializeBrowserSection();
+      initPocketCli();
     });
 
     async function loadAppVersion() {
@@ -1294,6 +1468,7 @@
         populateFields();
         updateToggles();
         updateAuthStatus();
+        updateDeleteButtons();
         await refreshModelDropdown();
       } catch (err) {
         console.error('Failed to load settings:', err);
@@ -1326,6 +1501,7 @@
         // Add available models grouped by provider
         const anthropicModels = models.filter(m => m.provider === 'anthropic');
         const moonshotModels = models.filter(m => m.provider === 'moonshot');
+        const glmModels = models.filter(m => m.provider === 'glm');
 
         if (anthropicModels.length > 0) {
           const group = document.createElement('optgroup');
@@ -1343,6 +1519,18 @@
           const group = document.createElement('optgroup');
           group.label = 'Kimi (Moonshot)';
           for (const model of moonshotModels) {
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.textContent = model.name;
+            group.appendChild(option);
+          }
+          dropdown.appendChild(group);
+        }
+
+        if (glmModels.length > 0) {
+          const group = document.createElement('optgroup');
+          group.label = 'GLM (Z.AI)';
+          for (const model of glmModels) {
             const option = document.createElement('option');
             option.value = model.id;
             option.textContent = model.name;
@@ -1374,7 +1562,12 @@
           if (input.type === 'checkbox') {
             input.checked = settings[key] === 'true';
           } else {
-            input.value = settings[key];
+            let value = settings[key];
+            // Don't show empty JSON arrays - let placeholder show instead
+            if (value === '[]') {
+              value = '';
+            }
+            input.value = value;
           }
         }
       }
@@ -1392,6 +1585,16 @@
       const browserEnabled = settings['browser.enabled'] === 'true';
       browserToggle.classList.toggle('active', browserEnabled);
       document.getElementById('browser-config').style.opacity = browserEnabled ? '1' : '0.5';
+
+      // Use My Browser toggle
+      const useMyBrowserToggle = document.getElementById('browser.useMyBrowser-toggle');
+      const useMyBrowser = settings['browser.useMyBrowser'] === 'true';
+      useMyBrowserToggle.classList.toggle('active', useMyBrowser);
+
+      // Pocket CLI auto-check toggle (defaults to true)
+      const pocketCliToggle = document.getElementById('pocketCli.autoCheck-toggle');
+      const pocketCliAutoCheck = settings['pocketCli.autoCheck'] !== 'false';
+      pocketCliToggle.classList.toggle('active', pocketCliAutoCheck);
 
       // Updates auto-check toggle (defaults to true)
       const updatesToggle = document.getElementById('updates.autoCheck-toggle');
@@ -1424,23 +1627,48 @@
       navItems.forEach(item => {
         item.addEventListener('click', () => {
           const sectionId = item.dataset.section;
-
-          navItems.forEach(n => n.classList.remove('active'));
-          item.classList.add('active');
-
-          sections.forEach(s => s.classList.remove('active'));
-          document.getElementById(sectionId).classList.add('active');
+          navigateToSection(sectionId);
         });
       });
 
+      // Handle hash navigation (e.g., #updates)
+      const hash = window.location.hash.slice(1);
+      if (hash) {
+        navigateToSection(hash);
+      }
+
+      // Listen for IPC navigation requests
+      if (window.pocketAgent?.onNavigateTab) {
+        window.pocketAgent.onNavigateTab((tab) => navigateToSection(tab));
+      }
+
+      // Listen for model changes from other sources (e.g., Telegram)
+      if (window.pocketAgent?.onModelChanged) {
+        window.pocketAgent.onModelChanged(() => refreshModelDropdown());
+      }
+    }
+
+    function navigateToSection(sectionId) {
+      const navItems = document.querySelectorAll('.nav-item');
+      const sections = document.querySelectorAll('.section');
+      const targetNav = document.querySelector(`.nav-item[data-section="${sectionId}"]`);
+      const targetSection = document.getElementById(sectionId);
+
+      if (targetNav && targetSection) {
+        navItems.forEach(n => n.classList.remove('active'));
+        targetNav.classList.add('active');
+        sections.forEach(s => s.classList.remove('active'));
+        targetSection.classList.add('active');
+      }
     }
 
     function setupAutoSave() {
-      // Exclude API key inputs and auth inputs from auto-save
+      // Exclude API key inputs, auth inputs, and fields with manual save buttons from auto-save
       const excludedIds = [
         'anthropic.apiKey', 'openai.apiKey', 'gemini.apiKey',
         'google.placesApiKey', 'notion.apiKey', 'trello.apiKey',
-        'trello.token', 'elevenlabs.apiKey', 'auth-api-key', 'oauth-code'
+        'trello.token', 'elevenlabs.apiKey', 'auth-api-key', 'oauth-code',
+        'telegram.allowedUserIds', 'telegram.defaultChatId'
       ];
 
       const inputs = document.querySelectorAll('input, select');
@@ -1460,7 +1688,8 @@
             await window.pocketAgent.setSetting(key, value);
             showToast('Got it!', 'success');
             // Activate reboot for settings that require restart
-            if (key === 'agent.model') {
+            const rebootSettings = ['agent.model', 'telegram.allowedUserIds', 'telegram.botToken', 'telegram.enabled'];
+            if (rebootSettings.includes(key)) {
               activateReboot();
             }
           } catch (err) {
@@ -1503,8 +1732,12 @@
         pattern: /^sk-[A-Za-z0-9_-]{40,}$/,
         hint: 'Moonshot keys start with "sk-"'
       },
+      'glm.apiKey': {
+        pattern: /^.{10,}$/,
+        hint: 'Enter your Z.AI API key'
+      },
       'telegram.botToken': {
-        pattern: /^\d{8,10}:[A-Za-z0-9_-]{35}$/,
+        pattern: /^\d{6,}:[A-Za-z0-9_-]{30,}$/,
         hint: 'Telegram tokens are in format "123456789:ABC..."'
       }
     };
@@ -1539,9 +1772,108 @@
         await window.pocketAgent.setSetting(inputId, key);
         settings[inputId] = key;
         showToast('Got it!', 'success');
+
+        // Show delete button
+        const deleteBtn = document.getElementById(`${inputId}-delete`);
+        if (deleteBtn) {
+          deleteBtn.classList.add('visible');
+        }
       } catch (err) {
         console.error('Failed to save key:', err);
         showToast('Save hiccup, try again?', 'error');
+      }
+    }
+
+    // Update delete button visibility based on stored keys
+    function updateDeleteButtons() {
+      const keyIds = [
+        'anthropic.apiKey', 'openai.apiKey', 'gemini.apiKey',
+        'google.placesApiKey', 'notion.apiKey', 'elevenlabs.apiKey',
+        'moonshot.apiKey', 'glm.apiKey', 'telegram.botToken'
+      ];
+
+      for (const keyId of keyIds) {
+        const deleteBtn = document.getElementById(`${keyId}-delete`);
+        if (deleteBtn) {
+          const hasKey = settings[keyId] && settings[keyId].trim() !== '';
+          deleteBtn.classList.toggle('visible', hasKey);
+        }
+      }
+
+      // Special case for auth-api-key which maps to anthropic.apiKey
+      const authDeleteBtn = document.getElementById('auth-api-key-delete');
+      if (authDeleteBtn) {
+        const hasKey = settings['anthropic.apiKey'] && settings['anthropic.apiKey'].trim() !== '';
+        authDeleteBtn.classList.toggle('visible', hasKey);
+      }
+
+      // Special case for Trello (has both apiKey and token)
+      const trelloDeleteBtn = document.getElementById('trello-delete');
+      if (trelloDeleteBtn) {
+        const hasKey = (settings['trello.apiKey'] && settings['trello.apiKey'].trim() !== '') ||
+                       (settings['trello.token'] && settings['trello.token'].trim() !== '');
+        trelloDeleteBtn.classList.toggle('visible', hasKey);
+      }
+    }
+
+    async function deleteKey(keyId, inputId = null) {
+      const actualInputId = inputId || keyId;
+
+      try {
+        await window.pocketAgent.setSetting(keyId, '');
+        settings[keyId] = '';
+
+        // Clear the input field
+        const input = document.getElementById(actualInputId);
+        if (input) {
+          input.value = '';
+        }
+
+        // Hide the delete button
+        const deleteBtn = document.getElementById(`${actualInputId}-delete`);
+        if (deleteBtn) {
+          deleteBtn.classList.remove('visible');
+        }
+
+        showToast('Key removed!', 'success');
+
+        // Refresh model dropdown if this affects available models
+        if (keyId === 'anthropic.apiKey' || keyId === 'moonshot.apiKey' || keyId === 'glm.apiKey') {
+          await refreshModelDropdown();
+          activateReboot();
+        }
+
+        // Update auth status if Anthropic key was deleted
+        if (keyId === 'anthropic.apiKey') {
+          updateAuthStatus();
+        }
+      } catch (err) {
+        console.error('Failed to delete key:', err);
+        showToast('Oops, couldn\'t delete that', 'error');
+      }
+    }
+
+    async function deleteTrelloKeys() {
+      try {
+        await window.pocketAgent.setSetting('trello.apiKey', '');
+        await window.pocketAgent.setSetting('trello.token', '');
+        settings['trello.apiKey'] = '';
+        settings['trello.token'] = '';
+
+        // Clear inputs
+        document.getElementById('trello.apiKey').value = '';
+        document.getElementById('trello.token').value = '';
+
+        // Hide delete button
+        const deleteBtn = document.getElementById('trello-delete');
+        if (deleteBtn) {
+          deleteBtn.classList.remove('visible');
+        }
+
+        showToast('Trello keys removed!', 'success');
+      } catch (err) {
+        console.error('Failed to delete Trello keys:', err);
+        showToast('Oops, couldn\'t delete that', 'error');
       }
     }
 
@@ -1572,9 +1904,30 @@
         settings['trello.apiKey'] = apiKey;
         settings['trello.token'] = token;
         showToast('Got it!', 'success');
+
+        // Show delete button
+        const deleteBtn = document.getElementById('trello-delete');
+        if (deleteBtn) {
+          deleteBtn.classList.add('visible');
+        }
       } catch (err) {
         console.error('Failed to save Trello keys:', err);
         showToast('Save hiccup, try again?', 'error');
+      }
+    }
+
+    async function saveTelegramSetting(inputId) {
+      const input = document.getElementById(inputId);
+      const value = input.value.trim();
+
+      try {
+        await window.pocketAgent.setSetting(inputId, value);
+        settings[inputId] = value;
+        showToast('Saved!', 'success');
+        activateReboot();
+      } catch (err) {
+        console.error('Failed to save telegram setting:', err);
+        showToast('Save failed, try again?', 'error');
       }
     }
 
@@ -1596,7 +1949,7 @@
     async function validateKey(provider) {
       const inputId = provider === 'telegram' ? 'telegram.botToken' : `${provider}.apiKey`;
       const input = document.getElementById(inputId);
-      const button = input.parentElement.querySelector('button');
+      const button = input.parentElement.querySelector('button:not(.delete-btn)');
       const key = input.value.trim();
 
       if (!key) {
@@ -1622,6 +1975,8 @@
           result = await window.pocketAgent.validateOpenAIKey(key);
         } else if (provider === 'moonshot') {
           result = await window.pocketAgent.validateMoonshotKey(key);
+        } else if (provider === 'glm') {
+          result = await window.pocketAgent.validateGlmKey(key);
         } else if (provider === 'telegram') {
           result = await window.pocketAgent.validateTelegramToken(key);
         }
@@ -1631,6 +1986,13 @@
           await window.pocketAgent.setSetting(inputId, key);
           settings[inputId] = key;
           showToast(result.botInfo ? `Valid! Bot: @${result.botInfo.username}` : 'All good!', 'success');
+
+          // Show delete button
+          const deleteBtn = document.getElementById(`${inputId}-delete`);
+          if (deleteBtn) {
+            deleteBtn.classList.add('visible');
+          }
+
           // Refresh model dropdown after adding a new key
           await refreshModelDropdown();
         } else {
@@ -1716,6 +2078,7 @@
       const hasOAuth = settings['auth.oauthToken'];
       const hasApiKey = settings['anthropic.apiKey'];
       const hasMoonshotKey = settings['moonshot.apiKey'];
+      const hasGlmKey = settings['glm.apiKey'];
       const anthropicKeyRow = document.getElementById('anthropic-key-row');
       const authApiKeySection = document.getElementById('auth-api-key-section');
       const brainPowerSection = document.getElementById('brain-power-section');
@@ -1726,7 +2089,7 @@
       }
 
       // Connected if any LLM provider is configured
-      const isConnected = (authMethod === 'oauth' && hasOAuth) || hasApiKey || hasMoonshotKey;
+      const isConnected = (authMethod === 'oauth' && hasOAuth) || hasApiKey || hasMoonshotKey || hasGlmKey;
 
       if (authMethod === 'oauth' && hasOAuth) {
         statusBadge.className = 'auth-badge oauth';
@@ -1836,7 +2199,7 @@
 
     async function saveApiKey() {
       const input = document.getElementById('auth-api-key');
-      const button = input.parentElement.querySelector('button');
+      const button = input.parentElement.querySelector('button:not(.delete-btn)');
       const key = input.value.trim();
 
       if (!key) {
@@ -1861,6 +2224,13 @@
           await window.pocketAgent.setSetting('auth.method', 'api_key');
           showToast('Key saved!', 'success');
           activateReboot();
+
+          // Show delete button
+          const deleteBtn = document.getElementById('auth-api-key-delete');
+          if (deleteBtn) {
+            deleteBtn.classList.add('visible');
+          }
+
           await loadSettings();
           updateAuthStatus();
           await refreshModelDropdown();
@@ -1892,31 +2262,320 @@
       }
     }
 
-    // Skills functions
-    async function loadSkillsSummary() {
-      const statusEl = document.getElementById('skills-status-line');
+    // Pocket CLI functions
+    let pocketCliInstalledVersion = null;
+    const CLI_IS_WINDOWS = window.pocketAgent.getPlatform() === 'win32';
+
+    // Platform-aware shell commands for Pocket CLI
+    const cliCommands = {
+      which: CLI_IS_WINDOWS
+        ? '(Get-Command pocket -ErrorAction SilentlyContinue).Source'
+        : 'which pocket',
+      version: (pocketPath) => CLI_IS_WINDOWS
+        ? null // No reliable way to extract version from Windows binary without strings
+        : `strings "${pocketPath}" | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | head -1`,
+      fetchLatest: CLI_IS_WINDOWS
+        ? 'Invoke-RestMethod https://api.github.com/repos/KenKaiii/pocket-agent-cli/releases/latest | ConvertTo-Json -Depth 10'
+        : 'curl -fsSL https://api.github.com/repos/KenKaiii/pocket-agent-cli/releases/latest',
+      install: CLI_IS_WINDOWS
+        ? [
+            '$installDir = Join-Path $env:LOCALAPPDATA "pocket-agent-cli"',
+            'New-Item -ItemType Directory -Force -Path $installDir | Out-Null',
+            '$release = Invoke-RestMethod "https://api.github.com/repos/KenKaiii/pocket-agent-cli/releases/latest"',
+            '$asset = $release.assets | Where-Object { $_.name -like "*windows*amd64*" } | Select-Object -First 1',
+            'if (-not $asset) { throw "No Windows release asset found" }',
+            '$zipPath = Join-Path $env:TEMP "pocket_cli.zip"',
+            'Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath',
+            'Expand-Archive -Path $zipPath -DestinationPath $installDir -Force',
+            'Remove-Item $zipPath -Force',
+            '$userPath = [Environment]::GetEnvironmentVariable("Path", "User")',
+            'if ($userPath -notlike "*$installDir*") { [Environment]::SetEnvironmentVariable("Path", "$userPath;$installDir", "User") }',
+            'Write-Output "Installed to $installDir"',
+          ].join('; ')
+        : 'curl -fsSL https://raw.githubusercontent.com/KenKaiii/pocket-agent-cli/main/scripts/install.sh | sed "s/^.*exec .*$//" | bash',
+    };
+
+    async function initPocketCli() {
+      const versionEl = document.getElementById('pocket-cli-version');
+      const statusEl = document.getElementById('pocket-cli-status');
+      const checkBtn = document.getElementById('pocket-cli-check-btn');
+      const installBtn = document.getElementById('pocket-cli-install-btn');
+
+      // Check if pocket command exists and get version
       try {
-        const result = await window.pocketAgent.getSkillsStatus();
-        const { total, available, unavailable } = result.summary;
-        if (unavailable === 0) {
+        const result = await window.pocketAgent.runCommand(cliCommands.which);
+        if (result && result.trim()) {
+          // Try to extract version from binary (macOS only; Windows shows "Installed")
+          const versionCmd = cliCommands.version(result.trim());
+          if (versionCmd) {
+            try {
+              const versionResult = await window.pocketAgent.runCommand(versionCmd);
+              if (versionResult && versionResult.trim()) {
+                pocketCliInstalledVersion = versionResult.trim().replace(/^v/, '');
+                versionEl.textContent = `v${pocketCliInstalledVersion}`;
+              } else {
+                versionEl.textContent = 'Installed';
+              }
+            } catch (e) {
+              versionEl.textContent = 'Installed';
+            }
+          } else {
+            versionEl.textContent = 'Installed';
+          }
           statusEl.className = 'status success';
-          statusEl.textContent = `${available} powers ready!`;
+          statusEl.textContent = 'Installed';
+          installBtn.style.display = 'none';
+          checkBtn.style.display = 'inline-block';
         } else {
           statusEl.className = 'status warning';
-          statusEl.textContent = `${available} ready, ${unavailable} need setup`;
+          statusEl.textContent = 'Not installed';
+          installBtn.style.display = 'inline-block';
+          installBtn.textContent = 'Install';
+          checkBtn.style.display = 'none';
+          versionEl.textContent = '—';
         }
       } catch (err) {
-        console.error('Failed to load skills summary:', err);
-        statusEl.className = 'status error';
-        statusEl.textContent = 'Failed to load';
+        statusEl.className = 'status warning';
+        statusEl.textContent = 'Not installed';
+        installBtn.style.display = 'inline-block';
+        installBtn.textContent = 'Install';
+        checkBtn.style.display = 'none';
+        versionEl.textContent = '—';
+      }
+
+      // Auto-check for updates if enabled
+      const autoCheck = settings['pocketCli.autoCheck'] !== 'false';
+      if (autoCheck && pocketCliInstalledVersion) {
+        checkPocketCliUpdates();
       }
     }
 
-    async function openSkillsSetup() {
+    async function checkPocketCliUpdates() {
+      const statusEl = document.getElementById('pocket-cli-status');
+      const checkBtn = document.getElementById('pocket-cli-check-btn');
+      const updateBtn = document.getElementById('pocket-cli-update-btn');
+      const installBtn = document.getElementById('pocket-cli-install-btn');
+      const infoBox = document.getElementById('pocket-cli-info');
+      const infoText = document.getElementById('pocket-cli-info-text');
+
+      checkBtn.disabled = true;
+      checkBtn.textContent = 'Checking...';
+      statusEl.className = 'status info';
+      statusEl.textContent = 'Checking...';
+
       try {
-        await window.pocketAgent.openSkillsSetup();
+        const latestJson = await window.pocketAgent.runCommand(cliCommands.fetchLatest);
+        if (latestJson) {
+          const release = JSON.parse(latestJson);
+          const latestVersion = (release.tag_name || '').replace(/^v/, '');
+
+          if (!pocketCliInstalledVersion) {
+            // Not installed
+            statusEl.className = 'status warning';
+            statusEl.textContent = 'Not installed';
+            installBtn.style.display = 'inline-block';
+            installBtn.textContent = 'Install';
+            checkBtn.style.display = 'none';
+          } else if (latestVersion && latestVersion !== pocketCliInstalledVersion) {
+            statusEl.className = 'status info';
+            statusEl.textContent = 'Update available';
+            updateBtn.style.display = 'inline-block';
+            updateBtn.textContent = `Update to v${latestVersion}`;
+            infoBox.style.display = 'flex';
+            infoText.textContent = `v${latestVersion} is available. You are on v${pocketCliInstalledVersion}.`;
+          } else {
+            statusEl.className = 'status success';
+            statusEl.textContent = 'Up to date';
+            updateBtn.style.display = 'none';
+            infoBox.style.display = 'none';
+          }
+        }
+      } catch (e) {
+        statusEl.className = 'status warning';
+        statusEl.textContent = 'Unable to check';
+      } finally {
+        checkBtn.disabled = false;
+        checkBtn.textContent = 'Check Now';
+      }
+    }
+
+    async function installPocketCli() {
+      const statusEl = document.getElementById('pocket-cli-status');
+      const installBtn = document.getElementById('pocket-cli-install-btn');
+
+      try {
+        installBtn.disabled = true;
+        installBtn.textContent = 'Installing...';
+        statusEl.className = 'status info';
+        statusEl.textContent = 'Installing...';
+
+        await window.pocketAgent.runCommand(cliCommands.install);
+        await initPocketCli();
+
+        if (document.getElementById('pocket-cli-status').classList.contains('success')) {
+          showToast('Pocket CLI installed successfully!' + (CLI_IS_WINDOWS ? ' Restart your terminal to use it.' : ''), 'success');
+        } else {
+          showToast('Installation completed, please check status', 'warning');
+        }
       } catch (err) {
-        showToast('Failed to open Skills Setup: ' + err.message, 'error');
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Install failed';
+        showToast('Failed to install Pocket CLI: ' + err.message, 'error');
+      } finally {
+        installBtn.disabled = false;
+        await initPocketCli();
+      }
+    }
+
+    async function updatePocketCli() {
+      const statusEl = document.getElementById('pocket-cli-status');
+      const updateBtn = document.getElementById('pocket-cli-update-btn');
+      const infoBox = document.getElementById('pocket-cli-info');
+      const infoText = document.getElementById('pocket-cli-info-text');
+
+      try {
+        updateBtn.disabled = true;
+        updateBtn.textContent = 'Updating...';
+        statusEl.className = 'status info';
+        statusEl.textContent = 'Updating...';
+        infoBox.style.display = 'flex';
+        infoText.textContent = 'Downloading and installing latest version...';
+
+        await window.pocketAgent.runCommand(cliCommands.install);
+        await initPocketCli();
+
+        if (document.getElementById('pocket-cli-status').classList.contains('success')) {
+          showToast('Pocket CLI updated successfully!', 'success');
+        } else {
+          showToast('Update completed, please check status', 'warning');
+        }
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Update failed';
+        showToast('Failed to update Pocket CLI: ' + err.message, 'error');
+      } finally {
+        updateBtn.disabled = false;
+        await initPocketCli();
+      }
+    }
+
+    // Browser control functions
+    async function initializeBrowserSection() {
+      const selector = document.getElementById('browser-selector');
+      const statusEl = document.getElementById('browser-status');
+
+      try {
+        // Detect installed browsers
+        const browsers = await window.pocketAgent.detectInstalledBrowsers();
+
+        // Clear and populate selector
+        selector.innerHTML = '<option value="">Select browser...</option>';
+        browsers.forEach(browser => {
+          const option = document.createElement('option');
+          option.value = browser.id;
+          option.textContent = browser.name;
+          selector.appendChild(option);
+        });
+
+        // Auto-select first browser if only one
+        if (browsers.length === 1) {
+          selector.value = browsers[0].id;
+        }
+
+        // Test current connection
+        await testBrowserConnection();
+      } catch (err) {
+        console.error('Failed to initialize browser section:', err);
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error loading';
+      }
+    }
+
+    async function launchBrowserWithCdp() {
+      const selector = document.getElementById('browser-selector');
+      const statusEl = document.getElementById('browser-status');
+      const launchBtn = document.getElementById('browser-launch-btn');
+      const portInput = document.getElementById('browser-port');
+
+      const browserId = selector.value;
+      if (!browserId) {
+        showToast('Please select a browser first', 'error');
+        return;
+      }
+
+      const port = parseInt(portInput.value) || 9222;
+
+      // Update UI
+      launchBtn.disabled = true;
+      launchBtn.textContent = 'Launching...';
+      statusEl.className = 'status info';
+      statusEl.textContent = 'Launching...';
+
+      try {
+        const result = await window.pocketAgent.launchBrowser(browserId, port);
+
+        if (result.success) {
+          statusEl.className = 'status success';
+          statusEl.textContent = 'Connected';
+          showToast('Browser launched with remote debugging enabled!', 'success');
+
+          // Update CDP URL to match port
+          const cdpInput = document.getElementById('browser.cdpUrl');
+          cdpInput.value = `http://localhost:${port}`;
+          await window.pocketAgent.setSetting('browser.cdpUrl', cdpInput.value);
+        } else if (result.alreadyRunning) {
+          statusEl.className = 'status warning';
+          statusEl.textContent = 'Browser running';
+          showToast(result.error, 'error');
+        } else {
+          statusEl.className = 'status error';
+          statusEl.textContent = 'Launch failed';
+          showToast(result.error || 'Failed to launch browser', 'error');
+        }
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error';
+        showToast('Error: ' + err.message, 'error');
+      } finally {
+        launchBtn.disabled = false;
+        launchBtn.textContent = 'Launch Browser';
+      }
+    }
+
+    async function testBrowserConnection() {
+      const statusEl = document.getElementById('browser-status');
+      const testBtn = document.getElementById('browser-test-btn');
+      const cdpInput = document.getElementById('browser.cdpUrl');
+
+      const cdpUrl = cdpInput.value || 'http://localhost:9222';
+
+      testBtn.disabled = true;
+      testBtn.textContent = 'Testing...';
+      statusEl.className = 'status info';
+      statusEl.textContent = 'Testing...';
+
+      try {
+        const result = await window.pocketAgent.testBrowserConnection(cdpUrl);
+
+        if (result.connected) {
+          statusEl.className = 'status success';
+          statusEl.textContent = 'Connected';
+
+          // Show browser info if available
+          if (result.browserInfo && result.browserInfo.Browser) {
+            const browserName = result.browserInfo.Browser.split('/')[0];
+            statusEl.textContent = `Connected (${browserName})`;
+          }
+        } else {
+          statusEl.className = 'status error';
+          statusEl.textContent = 'Not connected';
+        }
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error';
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = 'Test Connection';
       }
     }
 

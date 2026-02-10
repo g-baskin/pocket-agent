@@ -193,19 +193,7 @@ function ensureTable(db: Database.Database): void {
 export function getTaskAddToolDefinition() {
   return {
     name: 'task_add',
-    description: `Add a new task/todo item with optional due date, priority, and reminder.
-
-Use when user wants to:
-- Create a todo item
-- Add something to their task list
-- Set a task with a deadline
-
-Priority levels: low, medium (default), high
-
-Examples:
-- task_add("Buy groceries")
-- task_add("Call mom", due="tomorrow 5pm", priority="high")
-- task_add("Submit report", due="friday", reminder_minutes=60)`,
+    description: 'Add a todo item to the task list. Use for trackable items with status (pending/completed). For one-time "remind me" notifications, use create_reminder instead. For scheduled LLM actions, use create_routine.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -213,8 +201,7 @@ Examples:
         description: { type: 'string', description: 'Optional task description' },
         due: { type: 'string', description: 'Due date (e.g., "tomorrow", "friday 5pm")' },
         priority: { type: 'string', description: 'Priority: low, medium, high (default: medium)' },
-        reminder_minutes: { type: 'number', description: 'Minutes before due to remind' },
-        channel: { type: 'string', description: 'Where to send reminder: desktop or telegram' },
+        reminder_minutes: { type: 'number', description: 'Minutes before due date to send a reminder notification' },
       },
       required: ['title'],
     },
@@ -228,7 +215,6 @@ export async function handleTaskAddTool(input: unknown): Promise<string> {
     due?: string;
     priority?: string;
     reminder_minutes?: number;
-    channel?: string;
   };
 
   if (!params.title) {
@@ -245,7 +231,8 @@ export async function handleTaskAddTool(input: unknown): Promise<string> {
     return JSON.stringify({ error: 'Priority must be: low, medium, or high' });
   }
 
-  const channel = params.channel || 'desktop';
+  // Channel is always 'desktop' - routing broadcasts to all configured channels
+  const channel = 'desktop';
 
   try {
     const db = getDb();
@@ -262,6 +249,7 @@ export async function handleTaskAddTool(input: unknown): Promise<string> {
       title: params.title,
       due: dueDate ? formatDateTime(dueDate) : null,
       priority,
+      reminder_minutes: params.reminder_minutes || null,
       session_id: sessionId,
     });
   } catch (error) {
@@ -278,14 +266,7 @@ export async function handleTaskAddTool(input: unknown): Promise<string> {
 export function getTaskListToolDefinition() {
   return {
     name: 'task_list',
-    description: `List tasks/todos. Optionally filter by status.
-
-Status options: pending (default), completed, in_progress, all
-
-Examples:
-- task_list() - pending tasks
-- task_list(status="all")
-- task_list(status="completed")`,
+    description: 'List todo items from the task list. Filter by status: pending (default), completed, in_progress, or all. For scheduled routines/reminders, use list_routines instead.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -334,6 +315,7 @@ export async function handleTaskListTool(input: unknown): Promise<string> {
         due: formatDateTime(t.due_date),
         priority: t.priority,
         status: t.status,
+        reminder_minutes: t.reminder_minutes,
       })),
     });
   } catch (error) {
@@ -435,11 +417,7 @@ export async function handleTaskDeleteTool(input: unknown): Promise<string> {
 export function getTaskDueToolDefinition() {
   return {
     name: 'task_due',
-    description: `Get tasks due within the next N hours, including overdue tasks.
-
-Examples:
-- task_due() - due in next 24 hours (default)
-- task_due(hours=48)`,
+    description: 'Get tasks due within the next N hours, including overdue (default: 24 hours).',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -78,6 +78,7 @@ export interface SmartContext {
     summarizedMessages: number;
     recentCount: number;
     relevantCount: number;
+    newSummaryCreated: boolean;  // True if a new rolling summary was created this turn
   };
 }
 
@@ -409,6 +410,13 @@ export class MemoryManager {
 
     // Migration: add session_id to calendar_events, tasks, and cron_jobs
     this.migrateSessionScopedTables();
+
+    // Migration: add sdk_session_id to sessions for SDK session persistence
+    const sessColumns = this.db.pragma('table_info(sessions)') as Array<{ name: string }>;
+    if (!sessColumns.some(c => c.name === 'sdk_session_id')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN sdk_session_id TEXT');
+      console.log('[Memory] Migrated sessions table: added sdk_session_id column');
+    }
   }
 
   /**
@@ -555,8 +563,11 @@ export class MemoryManager {
 
     console.log(`[Memory] Embedding ${factsWithoutEmbeddings.length} facts...`);
 
-    for (const fact of factsWithoutEmbeddings) {
-      await this.embedFact(fact);
+    // Process in parallel batches of 5 to avoid rate limits
+    const batchSize = 5;
+    for (let i = 0; i < factsWithoutEmbeddings.length; i += batchSize) {
+      const batch = factsWithoutEmbeddings.slice(i, i + batchSize);
+      await Promise.all(batch.map((fact) => this.embedFact(fact)));
     }
 
     console.log('[Memory] Finished embedding facts');
@@ -665,6 +676,7 @@ export class MemoryManager {
         t.group_name as telegram_group_name
       FROM sessions s
       LEFT JOIN telegram_chat_sessions t ON s.id = t.session_id
+      GROUP BY s.id
       ORDER BY s.updated_at DESC
     `).all() as SessionRow[];
     return rows.map(row => ({
@@ -697,7 +709,7 @@ export class MemoryManager {
   }
 
   /**
-   * Delete a session and all its messages/summaries
+   * Delete a session and all its related data
    */
   deleteSession(id: string): boolean {
     // Don't allow deleting the default session
@@ -706,12 +718,32 @@ export class MemoryManager {
       return false;
     }
 
-    // Delete related data first (due to foreign key constraints)
+    // Delete all related data first (due to foreign key constraints)
+    // Order matters: delete child records before parent records
+
+    // Delete message embeddings for messages in this session
+    this.db.prepare(`
+      DELETE FROM message_embeddings
+      WHERE message_id IN (SELECT id FROM messages WHERE session_id = ?)
+    `).run(id);
+
+    // Delete messages and summaries
     this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
     this.db.prepare('DELETE FROM summaries WHERE session_id = ?').run(id);
+    this.db.prepare('DELETE FROM rolling_summaries WHERE session_id = ?').run(id);
+
+    // Delete session-scoped items (calendar, tasks, cron jobs)
+    this.db.prepare('DELETE FROM calendar_events WHERE session_id = ?').run(id);
+    this.db.prepare('DELETE FROM tasks WHERE session_id = ?').run(id);
+    this.db.prepare('DELETE FROM cron_jobs WHERE session_id = ?').run(id);
+
+    // Delete telegram chat session mapping
     this.db.prepare('DELETE FROM telegram_chat_sessions WHERE session_id = ?').run(id);
+
+    // Finally delete the session itself
     const result = this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
 
+    console.log(`[Memory] Deleted session ${id}: ${result.changes > 0 ? 'success' : 'not found'}`);
     return result.changes > 0;
   }
 
@@ -1022,14 +1054,17 @@ export class MemoryManager {
 
     // 3. Get or create rolling summary for older messages
     let rollingSummary: string | null = null;
+    let newSummaryCreated = false;
     const summarizedMessages = totalMessages - recentMessages.length;
 
     if (summarizedMessages > 0 && oldestRecentId > 1) {
-      rollingSummary = await this.getOrCreateRollingSummary(
+      const summaryResult = await this.getOrCreateRollingSummary(
         oldestRecentId,
         sessionId,
         rollingSummaryInterval
       );
+      rollingSummary = summaryResult.summary;
+      newSummaryCreated = summaryResult.newSummaryCreated;
     }
 
     // 4. Get semantically relevant messages (if embeddings available and query provided)
@@ -1071,6 +1106,7 @@ export class MemoryManager {
         summarizedMessages,
         recentCount: recentMessages.length,
         relevantCount: relevantMessages.length,
+        newSummaryCreated,
       },
     };
   }
@@ -1078,12 +1114,13 @@ export class MemoryManager {
   /**
    * Get or create a rolling summary for messages before the given ID.
    * Creates incremental summaries every N messages.
+   * Returns both the summary and whether a new summary was created this turn.
    */
   private async getOrCreateRollingSummary(
     beforeMessageId: number,
     sessionId: string,
     interval: number
-  ): Promise<string | null> {
+  ): Promise<{ summary: string | null; newSummaryCreated: boolean }> {
     // Check for existing rolling summary that covers up to beforeMessageId-1
     const existingSummary = this.db.prepare(`
       SELECT content FROM rolling_summaries
@@ -1110,8 +1147,22 @@ export class MemoryManager {
       ORDER BY id ASC
     `).all(sessionId, lastSummarizedId, beforeMessageId) as Message[];
 
-    // If we have enough unsummarized messages, create a new rolling summary
-    if (unsummarizedMessages.length >= interval && this.summarizer) {
+    // Calculate token count for unsummarized messages
+    const unsummarizedTokens = unsummarizedMessages.reduce(
+      (sum, m) => sum + estimateTokens(m.content), 0
+    );
+
+    // Token threshold for triggering summarization (prevents token blowup from long messages)
+    const TOKEN_THRESHOLD = 15000;
+
+    // Trigger summarization if either: enough messages OR too many tokens
+    const shouldSummarize = this.summarizer && (
+      unsummarizedMessages.length >= interval ||
+      unsummarizedTokens >= TOKEN_THRESHOLD
+    );
+
+    if (shouldSummarize && unsummarizedMessages.length > 0) {
+      console.log(`[Memory] Triggering summarization: ${unsummarizedMessages.length} messages, ${unsummarizedTokens} tokens (threshold: ${interval} msgs or ${TOKEN_THRESHOLD} tokens)`);
       const newSummary = await this.createRollingSummary(
         unsummarizedMessages,
         sessionId,
@@ -1131,26 +1182,26 @@ export class MemoryManager {
 
       // Combine with existing summary
       if (existingSummary?.content) {
-        return `${existingSummary.content}\n\n${newSummary}`;
+        return { summary: `${existingSummary.content}\n\n${newSummary}`, newSummaryCreated: true };
       }
-      return newSummary;
+      return { summary: newSummary, newSummaryCreated: true };
     }
 
     // Return existing summary combined with basic summary of recent unsummarized
     if (existingSummary?.content) {
       if (unsummarizedMessages.length > 0) {
         const basicSummary = this.createBasicSummary(unsummarizedMessages);
-        return `${existingSummary.content}\n\n${basicSummary}`;
+        return { summary: `${existingSummary.content}\n\n${basicSummary}`, newSummaryCreated: false };
       }
-      return existingSummary.content;
+      return { summary: existingSummary.content, newSummaryCreated: false };
     }
 
     // No existing summary - create basic summary if we have messages
     if (unsummarizedMessages.length > 0) {
-      return this.createBasicSummary(unsummarizedMessages);
+      return { summary: this.createBasicSummary(unsummarizedMessages), newSummaryCreated: false };
     }
 
-    return null;
+    return { summary: null, newSummaryCreated: false };
   }
 
   /**
@@ -1286,22 +1337,33 @@ export class MemoryManager {
       LIMIT ?
     `).all(sessionId, limit) as Array<{ id: number; content: string }>;
 
-    let embedded = 0;
-    for (const msg of unembeddedMessages) {
-      try {
-        const embedding = await embed(msg.content);
-        const embeddingBuffer = serializeEmbedding(embedding);
+    // Process in parallel batches of 5 to avoid rate limits
+    const batchSize = 5;
+    const results = await Promise.all(
+      Array.from({ length: Math.ceil(unembeddedMessages.length / batchSize) }, async (_, batchIndex) => {
+        const batch = unembeddedMessages.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize);
+        let batchEmbedded = 0;
+        await Promise.all(
+          batch.map(async (msg) => {
+            try {
+              const embedding = await embed(msg.content);
+              const embeddingBuffer = serializeEmbedding(embedding);
 
-        this.db.prepare(`
-          INSERT OR REPLACE INTO message_embeddings (message_id, embedding)
-          VALUES (?, ?)
-        `).run(msg.id, embeddingBuffer);
+              this.db.prepare(`
+                INSERT OR REPLACE INTO message_embeddings (message_id, embedding)
+                VALUES (?, ?)
+              `).run(msg.id, embeddingBuffer);
 
-        embedded++;
-      } catch (error) {
-        console.error(`[Memory] Failed to embed message ${msg.id}:`, error);
-      }
-    }
+              batchEmbedded++;
+            } catch (error) {
+              console.error(`[Memory] Failed to embed message ${msg.id}:`, error);
+            }
+          })
+        );
+        return batchEmbedded;
+      })
+    );
+    const embedded = results.reduce((sum, count) => sum + count, 0);
 
     if (embedded > 0) {
       console.log(`[Memory] Embedded ${embedded} messages for session ${sessionId}`);
@@ -1779,11 +1841,38 @@ export class MemoryManager {
       // Clear only the specified session
       this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
       this.db.prepare('DELETE FROM summaries WHERE session_id = ?').run(sessionId);
+      // Clear SDK session so next message starts fresh
+      this.clearSdkSessionId(sessionId);
     } else {
       // Clear all (legacy behavior)
       this.db.exec('DELETE FROM messages');
       this.db.exec('DELETE FROM summaries');
+      this.db.exec('UPDATE sessions SET sdk_session_id = NULL');
     }
+  }
+
+  // ============ SDK SESSION PERSISTENCE ============
+
+  /**
+   * Get the SDK session ID for a given app session
+   */
+  getSdkSessionId(sessionId: string): string | null {
+    const row = this.db.prepare('SELECT sdk_session_id FROM sessions WHERE id = ?').get(sessionId) as { sdk_session_id: string | null } | undefined;
+    return row?.sdk_session_id ?? null;
+  }
+
+  /**
+   * Store the SDK session ID for a given app session
+   */
+  setSdkSessionId(sessionId: string, sdkSessionId: string): void {
+    this.db.prepare('UPDATE sessions SET sdk_session_id = ? WHERE id = ?').run(sdkSessionId, sessionId);
+  }
+
+  /**
+   * Clear the SDK session ID for a given app session (forces fresh start)
+   */
+  clearSdkSessionId(sessionId: string): void {
+    this.db.prepare('UPDATE sessions SET sdk_session_id = NULL WHERE id = ?').run(sessionId);
   }
 
   /**

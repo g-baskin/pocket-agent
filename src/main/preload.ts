@@ -12,15 +12,26 @@ contextBridge.exposeInMainWorld('pocketAgent', {
     return () => ipcRenderer.removeListener('agent:status', listener);
   },
   saveAttachment: (name: string, dataUrl: string) => ipcRenderer.invoke('attachment:save', name, dataUrl),
+  readMedia: (filePath: string) => ipcRenderer.invoke('agent:readMedia', filePath),
   onSchedulerMessage: (callback: (data: { jobName: string; prompt: string; response: string; sessionId: string }) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, data: { jobName: string; prompt: string; response: string; sessionId: string }) => callback(data);
     ipcRenderer.on('scheduler:message', listener);
     return () => ipcRenderer.removeListener('scheduler:message', listener);
   },
-  onTelegramMessage: (callback: (data: { userMessage: string; response: string; chatId: number; sessionId: string }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, data: { userMessage: string; response: string; chatId: number; sessionId: string }) => callback(data);
+  onTelegramMessage: (callback: (data: { userMessage: string; response: string; chatId: number; sessionId: string; hasAttachment?: boolean; attachmentType?: 'photo' | 'voice' | 'audio'; wasCompacted?: boolean; media?: Array<{ type: string; filePath: string; mimeType: string }> }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: { userMessage: string; response: string; chatId: number; sessionId: string; hasAttachment?: boolean; attachmentType?: 'photo' | 'voice' | 'audio'; wasCompacted?: boolean; media?: Array<{ type: string; filePath: string; mimeType: string }> }) => callback(data);
     ipcRenderer.on('telegram:message', listener);
     return () => ipcRenderer.removeListener('telegram:message', listener);
+  },
+  onSessionsChanged: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('sessions:changed', listener);
+    return () => ipcRenderer.removeListener('sessions:changed', listener);
+  },
+  onModelChanged: (callback: (model: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, model: string) => callback(model);
+    ipcRenderer.on('model:changed', listener);
+    return () => ipcRenderer.removeListener('model:changed', listener);
   },
   getHistory: (limit?: number, sessionId?: string) => ipcRenderer.invoke('agent:history', limit, sessionId),
   getStats: (sessionId?: string) => ipcRenderer.invoke('agent:stats', sessionId),
@@ -51,6 +62,8 @@ contextBridge.exposeInMainWorld('pocketAgent', {
   openCustomize: () => ipcRenderer.invoke('app:openCustomize'),
   openRoutines: () => ipcRenderer.invoke('app:openRoutines'),
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
+  openPath: (filePath: string) => ipcRenderer.invoke('app:openPath', filePath),
+  openImage: (src: string) => ipcRenderer.invoke('app:openImage', src),
 
   // Customize
   getIdentity: () => ipcRenderer.invoke('customize:getIdentity'),
@@ -87,26 +100,19 @@ contextBridge.exposeInMainWorld('pocketAgent', {
   validateAnthropicKey: (key: string) => ipcRenderer.invoke('settings:validateAnthropic', key),
   validateOpenAIKey: (key: string) => ipcRenderer.invoke('settings:validateOpenAI', key),
   validateMoonshotKey: (key: string) => ipcRenderer.invoke('settings:validateMoonshot', key),
+  validateGlmKey: (key: string) => ipcRenderer.invoke('settings:validateGlm', key),
   validateTelegramToken: (token: string) => ipcRenderer.invoke('settings:validateTelegram', token),
   getAvailableModels: () => ipcRenderer.invoke('settings:getAvailableModels'),
   restartAgent: () => ipcRenderer.invoke('agent:restart'),
-  openSettings: () => ipcRenderer.invoke('app:openSettings'),
+  openSettings: (tab?: string) => ipcRenderer.invoke('app:openSettings', tab),
   openChat: () => ipcRenderer.invoke('app:openChat'),
   startOAuth: () => ipcRenderer.invoke('auth:startOAuth'),
   completeOAuth: (code: string) => ipcRenderer.invoke('auth:completeOAuth', code),
   cancelOAuth: () => ipcRenderer.invoke('auth:cancelOAuth'),
   isOAuthPending: () => ipcRenderer.invoke('auth:isOAuthPending'),
 
-  // Skills
-  getSkillsStatus: () => ipcRenderer.invoke('skills:getStatus'),
-  installSkillDeps: (skillName: string) => ipcRenderer.invoke('skills:install', skillName),
-  uninstallSkillDeps: (skillName: string) => ipcRenderer.invoke('skills:uninstall', skillName),
-  openSkillsSetup: () => ipcRenderer.invoke('app:openSkillsSetup'),
-  openPermissionSettings: (permissionType: string) => ipcRenderer.invoke('skills:openPermissionSettings', permissionType),
-  checkPermission: (permissionType: string) => ipcRenderer.invoke('skills:checkPermission', permissionType),
-  getSkillSetupConfig: (skillName: string) => ipcRenderer.invoke('skills:getSetupConfig', skillName),
-  runSkillSetupCommand: (params: { skillName: string; stepId: string; inputs?: Record<string, string> }) =>
-    ipcRenderer.invoke('skills:runSetupCommand', params),
+  // Commands (Workflows)
+  getCommands: () => ipcRenderer.invoke('commands:list'),
 
   // Updates
   checkForUpdates: () => ipcRenderer.invoke('updater:checkForUpdates'),
@@ -117,6 +123,24 @@ contextBridge.exposeInMainWorld('pocketAgent', {
     const listener = (_event: Electron.IpcRendererEvent, status: { status: string; info?: unknown; progress?: { percent: number }; error?: string }) => callback(status);
     ipcRenderer.on('updater:status', listener);
     return () => ipcRenderer.removeListener('updater:status', listener);
+  },
+
+  // Browser control
+  detectInstalledBrowsers: () => ipcRenderer.invoke('browser:detectInstalled'),
+  launchBrowser: (browserId: string, port?: number) => ipcRenderer.invoke('browser:launch', browserId, port),
+  testBrowserConnection: (cdpUrl?: string) => ipcRenderer.invoke('browser:testConnection', cdpUrl),
+
+  // Shell commands
+  runCommand: (command: string) => ipcRenderer.invoke('shell:runCommand', command),
+
+  // Platform info
+  getPlatform: () => process.platform,
+
+  // Navigation
+  onNavigateTab: (callback: (tab: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, tab: string) => callback(tab);
+    ipcRenderer.on('navigate-tab', listener);
+    return () => ipcRenderer.removeListener('navigate-tab', listener);
   },
 });
 
@@ -134,14 +158,17 @@ interface Session {
 declare global {
   interface Window {
     pocketAgent: {
-      send: (message: string, sessionId?: string) => Promise<{ success: boolean; response?: string; error?: string; tokensUsed?: number; suggestedPrompt?: string }>;
+      send: (message: string, sessionId?: string) => Promise<{ success: boolean; response?: string; error?: string; tokensUsed?: number; suggestedPrompt?: string; media?: Array<{ type: string; filePath: string; mimeType: string }> }>;
       stop: (sessionId?: string) => Promise<{ success: boolean }>;
       onStatus: (callback: (status: { type: string; toolName?: string; toolInput?: string; message?: string }) => void) => () => void;
       saveAttachment: (name: string, dataUrl: string) => Promise<string>;
+      readMedia: (filePath: string) => Promise<string | null>;
       onSchedulerMessage: (callback: (data: { jobName: string; prompt: string; response: string; sessionId: string }) => void) => () => void;
-      onTelegramMessage: (callback: (data: { userMessage: string; response: string; chatId: number; sessionId: string }) => void) => () => void;
+      onTelegramMessage: (callback: (data: { userMessage: string; response: string; chatId: number; sessionId: string; hasAttachment?: boolean; attachmentType?: 'photo' | 'voice' | 'audio'; wasCompacted?: boolean; media?: Array<{ type: string; filePath: string; mimeType: string }> }) => void) => () => void;
+      onSessionsChanged: (callback: () => void) => () => void;
+      onModelChanged: (callback: (model: string) => void) => () => void;
       getHistory: (limit?: number, sessionId?: string) => Promise<Array<{ role: string; content: string; timestamp: string; metadata?: { source?: string; jobName?: string } }>>;
-      getStats: (sessionId?: string) => Promise<{ messageCount: number; factCount: number; estimatedTokens: number; sessionCount?: number } | null>;
+      getStats: (sessionId?: string) => Promise<{ messageCount: number; factCount: number; estimatedTokens: number; sessionCount?: number; contextTokens?: number; contextWindow?: number } | null>;
       clearConversation: (sessionId?: string) => Promise<{ success: boolean }>;
       // Sessions
       getSessions: () => Promise<Session[]>;
@@ -167,6 +194,8 @@ declare global {
       openCustomize: () => Promise<void>;
       openRoutines: () => Promise<void>;
       openExternal: (url: string) => Promise<void>;
+      openPath: (filePath: string) => Promise<void>;
+      openImage: (src: string) => Promise<void>;
       // Customize
       getIdentity: () => Promise<string>;
       saveIdentity: (content: string) => Promise<{ success: boolean }>;
@@ -196,61 +225,32 @@ declare global {
       validateAnthropicKey: (key: string) => Promise<{ valid: boolean; error?: string }>;
       validateOpenAIKey: (key: string) => Promise<{ valid: boolean; error?: string }>;
       validateMoonshotKey: (key: string) => Promise<{ valid: boolean; error?: string }>;
+      validateGlmKey: (key: string) => Promise<{ valid: boolean; error?: string }>;
       validateTelegramToken: (token: string) => Promise<{ valid: boolean; error?: string; botInfo?: unknown }>;
       getAvailableModels: () => Promise<Array<{ id: string; name: string; provider: string }>>;
       restartAgent: () => Promise<{ success: boolean }>;
-      openSettings: () => Promise<void>;
+      openSettings: (tab?: string) => Promise<void>;
       openChat: () => Promise<void>;
       startOAuth: () => Promise<{ success: boolean; error?: string }>;
       completeOAuth: (code: string) => Promise<{ success: boolean; error?: string }>;
       cancelOAuth: () => Promise<{ success: boolean }>;
       isOAuthPending: () => Promise<boolean>;
-      // Skills
-      getSkillsStatus: () => Promise<{
-        skills: Array<{
-          name: string;
-          available: boolean;
-          missingBins: string[];
-          missingEnvVars: string[];
-          requiredEnvVars: string[];
-          missingPermissions: string[];
-          requiredPermissions: string[];
-          osCompatible: boolean;
-          installOptions: Array<{ id: string; kind: string; label: string; bins?: string[] }>;
-        }>;
-        summary: { total: number; available: number; unavailable: number; incompatible: number };
-        prerequisites: { brew: boolean; go: boolean; node: boolean; uv: boolean; git: boolean };
-      }>;
-      installSkillDeps: (skillName: string) => Promise<{ success: boolean; installed: string[]; failed: string[] }>;
-      uninstallSkillDeps: (skillName: string) => Promise<{ success: boolean; removed: string[]; failed: string[] }>;
-      openSkillsSetup: () => Promise<void>;
-      openPermissionSettings: (permissionType: string) => Promise<void>;
-      checkPermission: (permissionType: string) => Promise<{ type: string; granted: boolean; canRequest: boolean; label: string; description: string; settingsUrl: string }>;
-      getSkillSetupConfig: (skillName: string) => Promise<{
-        found: boolean;
-        setup?: {
-          type: string;
-          title: string;
-          steps: Array<{
-            id: string;
-            title: string;
-            description: string;
-            action: string;
-            command?: string;
-            inputs?: Array<{ id: string; label: string; placeholder?: string }>;
-            file_type?: string;
-            help_url?: string;
-            verify?: boolean;
-          }>;
-        };
-      }>;
-      runSkillSetupCommand: (command: string) => Promise<{ success: boolean; output?: string; error?: string }>;
+      // Commands (Workflows)
+      getCommands: () => Promise<Array<{ name: string; description: string; filename: string; content: string }>>;
       // Updates
       checkForUpdates: () => Promise<{ status: string; info?: { version: string }; error?: string }>;
       downloadUpdate: () => Promise<{ success: boolean; error?: string }>;
       installUpdate: () => Promise<{ success: boolean; error?: string }>;
       getUpdateStatus: () => Promise<{ status: string; info?: { version: string }; progress?: { percent: number }; error?: string }>;
       onUpdateStatus: (callback: (status: { status: string; info?: { version: string }; progress?: { percent: number }; error?: string }) => void) => () => void;
+      // Browser control
+      detectInstalledBrowsers: () => Promise<Array<{ id: string; name: string; path: string; processName: string; installed: boolean }>>;
+      launchBrowser: (browserId: string, port?: number) => Promise<{ success: boolean; error?: string; alreadyRunning?: boolean }>;
+      testBrowserConnection: (cdpUrl?: string) => Promise<{ connected: boolean; error?: string; browserInfo?: unknown }>;
+      // Shell commands
+      runCommand: (command: string) => Promise<string>;
+      // Platform info
+      getPlatform: () => string;
     };
   }
 }

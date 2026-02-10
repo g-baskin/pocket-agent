@@ -149,33 +149,44 @@ export const SETTINGS_SCHEMA: SettingDefinition[] = [
     description: 'Your Moonshot API key for Kimi models',
     type: 'password',
   },
+  {
+    key: 'glm.apiKey',
+    defaultValue: '',
+    encrypted: true,
+    category: 'api_keys',
+    label: 'Z.AI GLM API Key',
+    description: 'Your Z.AI API key for GLM models',
+    type: 'password',
+  },
 
   // Agent settings
   {
     key: 'agent.model',
-    defaultValue: 'claude-opus-4-5-20251101',
+    defaultValue: 'claude-opus-4-6',
     encrypted: false,
     category: 'agent',
     label: 'Default Model',
     description: 'Claude model to use for conversations',
     type: 'string',
   },
+  // DEPRECATED: SDK handles compaction natively via persistSession + resume
   {
     key: 'agent.compactionThreshold',
     defaultValue: '120000',
     encrypted: false,
     category: 'agent',
     label: 'Compaction Threshold',
-    description: 'Token count at which to start compacting context',
+    description: 'Deprecated - SDK handles this natively',
     type: 'number',
   },
+  // DEPRECATED: SDK handles context window natively via persistSession + resume
   {
     key: 'agent.maxContextTokens',
     defaultValue: '150000',
     encrypted: false,
     category: 'agent',
     label: 'Max Context Tokens',
-    description: 'Maximum tokens in conversation context',
+    description: 'Deprecated - SDK handles this natively',
     type: 'number',
   },
   {
@@ -187,31 +198,34 @@ export const SETTINGS_SCHEMA: SettingDefinition[] = [
     description: 'How much reasoning to show (none, minimal, normal, extended)',
     type: 'string',
   },
+  // DEPRECATED: SDK handles conversation history natively via persistSession + resume
   {
     key: 'agent.recentMessageLimit',
     defaultValue: '20',
     encrypted: false,
     category: 'agent',
     label: 'Recent Message Limit',
-    description: 'Number of recent messages to include in context (rest are summarized)',
+    description: 'Deprecated - SDK handles this natively',
     type: 'number',
   },
+  // DEPRECATED: SDK handles summarization natively via auto-compaction
   {
     key: 'agent.rollingSummaryInterval',
     defaultValue: '50',
     encrypted: false,
     category: 'agent',
     label: 'Rolling Summary Interval',
-    description: 'Create summaries every N messages',
+    description: 'Deprecated - SDK handles this natively',
     type: 'number',
   },
+  // DEPRECATED: SDK handles context retrieval natively via persistSession + resume
   {
     key: 'agent.semanticRetrievalCount',
     defaultValue: '5',
     encrypted: false,
     category: 'agent',
     label: 'Semantic Retrieval Count',
-    description: 'Number of semantically relevant past messages to include (0 to disable)',
+    description: 'Deprecated - SDK handles this natively',
     type: 'number',
   },
 
@@ -319,6 +333,15 @@ export const SETTINGS_SCHEMA: SettingDefinition[] = [
     description: 'Chrome DevTools Protocol URL',
     type: 'string',
   },
+  {
+    key: 'browser.useMyBrowser',
+    defaultValue: 'false',
+    encrypted: false,
+    category: 'browser',
+    label: 'Use My Browser',
+    description: 'Always use your browser instead of headless mode',
+    type: 'boolean',
+  },
 
   // Scheduler settings
   {
@@ -397,16 +420,6 @@ export const SETTINGS_SCHEMA: SettingDefinition[] = [
     description: 'Saved position and size of facts window (JSON)',
     type: 'string',
   },
-  {
-    key: 'window.skillsSetupBounds',
-    defaultValue: '',
-    encrypted: false,
-    category: 'window',
-    label: 'Skills Setup Window Bounds',
-    description: 'Saved position and size of skills setup window (JSON)',
-    type: 'string',
-  },
-
   // User Profile settings
   {
     key: 'profile.name',
@@ -709,10 +722,11 @@ class SettingsManagerClass {
       return !!oauthToken;
     }
 
-    // Check for API key authentication (Anthropic OR Moonshot)
+    // Check for API key authentication (any supported provider)
     const anthropicKey = this.get('anthropic.apiKey');
     const moonshotKey = this.get('moonshot.apiKey');
-    return !!anthropicKey || !!moonshotKey;
+    const glmKey = this.get('glm.apiKey');
+    return !!anthropicKey || !!moonshotKey || !!glmKey;
   }
 
   /**
@@ -876,6 +890,34 @@ class SettingsManagerClass {
         },
         body: JSON.stringify({
           model: 'kimi-k2.5',
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'Hi' }],
+        }),
+      });
+
+      if (response.ok) {
+        return { valid: true };
+      }
+
+      const data = await response.json();
+      return { valid: false, error: data.error?.message || 'Invalid API key' };
+    } catch (error) {
+      return { valid: false, error: error instanceof Error ? error.message : 'Connection failed' };
+    }
+  }
+
+  async validateGlmKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+    try {
+      // Z.AI GLM uses Anthropic-compatible API with Bearer token auth
+      const response = await fetch('https://api.z.ai/api/anthropic/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'glm-4.7',
           max_tokens: 10,
           messages: [{ role: 'user', content: 'Hi' }],
         }),

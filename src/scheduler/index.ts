@@ -94,7 +94,8 @@ export class CronScheduler {
     }
 
     await this.loadJobsFromDatabase();
-    this.lastJobCount = this.jobs.size;
+    // Use DB count (includes timer-based jobs) not this.jobs.size (cron only)
+    this.lastJobCount = this.memory.getCronJobs(false).length;
     console.log(`[Scheduler] Initialized with ${this.jobs.size} jobs`);
 
     // Start periodic check for new jobs (every 60 seconds)
@@ -104,11 +105,15 @@ export class CronScheduler {
 
     // Start periodic check for calendar/task reminders (every 30 seconds)
     this.reminderInterval = setInterval(() => {
-      this.checkReminders();
+      this.checkReminders().catch((err) => {
+        console.error('[Scheduler] Error checking reminders:', err);
+      });
     }, 30000);
 
     // Run initial reminder check
-    this.checkReminders();
+    this.checkReminders().catch((err) => {
+      console.error('[Scheduler] Error in initial reminder check:', err);
+    });
   }
 
   /**
@@ -124,7 +129,7 @@ export class CronScheduler {
     if (currentCount !== this.lastJobCount) {
       console.log(`[Scheduler] Job count changed (${this.lastJobCount} -> ${currentCount}), reloading...`);
       await this.loadJobsFromDatabase();
-      this.lastJobCount = this.jobs.size;
+      this.lastJobCount = currentCount;
     }
   }
 
@@ -132,6 +137,14 @@ export class CronScheduler {
    * Check for calendar events and tasks that need reminders
    * Uses mutex to prevent overlapping executions
    */
+  /**
+   * Format date for SQLite datetime() function
+   * SQLite is finicky with milliseconds and 'Z' suffix, use clean ISO format
+   */
+  private formatForSqlite(date: Date): string {
+    return date.toISOString().replace(/\.\d{3}Z$/, '');
+  }
+
   private async checkReminders(): Promise<void> {
     if (!this.db) return;
 
@@ -146,15 +159,16 @@ export class CronScheduler {
     try {
       const db = this.db;
       const now = new Date();
+      const nowSqlite = this.formatForSqlite(now);
 
       // Check calendar events
       const events = db.prepare(`
         SELECT id, title, description, start_time, location, reminder_minutes, channel, session_id
         FROM calendar_events
         WHERE reminded = 0
-          AND datetime(start_time, '-' || reminder_minutes || ' minutes') <= datetime(?)
-          AND datetime(start_time) > datetime(?)
-      `).all(now.toISOString(), now.toISOString()) as CalendarEvent[];
+          AND datetime(replace(start_time, 'Z', ''), '-' || reminder_minutes || ' minutes') <= datetime(?)
+          AND datetime(replace(start_time, 'Z', '')) > datetime(?)
+      `).all(nowSqlite, nowSqlite) as CalendarEvent[];
 
       for (const event of events) {
         const startTime = new Date(event.start_time);
@@ -175,6 +189,7 @@ export class CronScheduler {
 
         // Mark as reminded
         db.prepare('UPDATE calendar_events SET reminded = 1 WHERE id = ?').run(event.id);
+        console.log(`[Scheduler] Marked calendar event ${event.id} as reminded`);
       }
 
       // Check tasks with due dates
@@ -184,9 +199,14 @@ export class CronScheduler {
         WHERE status != 'completed'
           AND reminded = 0
           AND reminder_minutes IS NOT NULL
-          AND datetime(due_date, '-' || reminder_minutes || ' minutes') <= datetime(?)
-          AND datetime(due_date) > datetime(?)
-      `).all(now.toISOString(), now.toISOString()) as Task[];
+          AND due_date IS NOT NULL
+          AND datetime(replace(due_date, 'Z', ''), '-' || reminder_minutes || ' minutes') <= datetime(?)
+          AND datetime(replace(due_date, 'Z', '')) > datetime(?)
+      `).all(nowSqlite, nowSqlite) as Task[];
+
+      if (tasks.length > 0) {
+        console.log(`[Scheduler] Found ${tasks.length} task(s) due for reminder`);
+      }
 
       for (const task of tasks) {
         const dueDate = new Date(task.due_date);
@@ -207,6 +227,7 @@ export class CronScheduler {
 
         // Mark as reminded
         db.prepare('UPDATE tasks SET reminded = 1 WHERE id = ?').run(task.id);
+        console.log(`[Scheduler] Marked task ${task.id} as reminded`);
       }
 
       // Check for due cron jobs
@@ -238,11 +259,12 @@ export class CronScheduler {
       job_type: string | null;
     }
 
+    const nowSqlite = this.formatForSqlite(now);
     const dueJobs = db.prepare(`
       SELECT id, name, schedule_type, schedule, run_at, interval_ms, prompt, channel, delete_after_run, context_messages, session_id, job_type
       FROM cron_jobs
-      WHERE enabled = 1 AND next_run_at IS NOT NULL AND datetime(next_run_at) <= datetime(?)
-    `).all(now.toISOString()) as DueJob[];
+      WHERE enabled = 1 AND next_run_at IS NOT NULL AND datetime(replace(next_run_at, 'Z', '')) <= datetime(?)
+    `).all(nowSqlite) as DueJob[];
 
     for (const job of dueJobs) {
       const startTime = Date.now();
@@ -257,6 +279,11 @@ export class CronScheduler {
           // Reminders: display the pre-composed message directly, NO LLM call
           response = job.prompt;
           console.log(`[Scheduler] Reminder (no LLM): ${job.name}`);
+
+          // Save reminder to messages table for persistence and history display
+          if (this.memory) {
+            this.memory.saveMessage('assistant', response, sessionId, { source: 'scheduler', jobName: job.name });
+          }
         } else {
           // Routines: call LLM with context
           let contextText = '';
@@ -419,12 +446,11 @@ export class CronScheduler {
     }
 
     // Also send to Telegram if configured AND session has a linked chat
-    if (channel === 'telegram' && this.telegramBot && this.memory) {
+    if (this.telegramBot && this.memory) {
       const linkedChatId = this.memory.getChatForSession(sessionId);
       if (linkedChatId) {
         await this.telegramBot.sendMessage(linkedChatId, response);
       }
-      // No broadcast fallback - only send to session's linked chat
     }
   }
 
@@ -435,6 +461,11 @@ export class CronScheduler {
   private async sendReminder(type: 'calendar' | 'task', title: string, message: string, channel: string, sessionId: string = 'default'): Promise<void> {
     console.log(`[Scheduler] Sending ${type} reminder: ${title} (session: ${sessionId})`);
 
+    // Save reminder to messages table for persistence and history display
+    if (this.memory) {
+      this.memory.saveMessage('assistant', message, sessionId, { source: 'scheduler', jobName: `${type}_reminder` });
+    }
+
     // Always send to desktop (notification + chat to the correct session)
     if (this.onNotification) {
       this.onNotification('Pocket Agent', message);
@@ -444,12 +475,11 @@ export class CronScheduler {
     }
 
     // Also send to Telegram if configured AND session has a linked chat
-    if (channel === 'telegram' && this.telegramBot && this.memory) {
+    if (this.telegramBot && this.memory) {
       const linkedChatId = this.memory.getChatForSession(sessionId);
       if (linkedChatId) {
         await this.telegramBot.sendMessage(linkedChatId, `${type === 'calendar' ? '📅' : '✓'} ${message}`);
       }
-      // No broadcast fallback - only send to session's linked chat
     }
 
     // Log to history

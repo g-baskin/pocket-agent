@@ -9,7 +9,6 @@
 import { createInterface } from 'readline';
 import puppeteer, { Browser, Page } from 'puppeteer-core';
 import { spawn } from 'child_process';
-import * as os from 'os';
 
 const DEFAULT_CDP_URL = 'http://localhost:9222';
 
@@ -38,8 +37,9 @@ const TOOLS = [
     name: 'browser',
     description: `Browser automation using Chrome DevTools Protocol.
 
-IMPORTANT: Requires Chrome to be running with:
-  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222
+IMPORTANT: Requires Chrome to be running with remote debugging enabled:
+  macOS:   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222
+  Windows: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222
 
 Actions:
 - navigate: Go to URL (requires url)
@@ -83,19 +83,6 @@ Example: { "action": "navigate", "url": "https://example.com" }`,
       required: ['title'],
     },
   },
-  {
-    name: 'pty_exec',
-    description: 'Execute command with PTY for interactive CLIs',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        command: { type: 'string' },
-        cwd: { type: 'string' },
-        timeout: { type: 'number' },
-      },
-      required: ['command'],
-    },
-  },
 ];
 
 // Browser functions
@@ -110,10 +97,10 @@ async function connectBrowser(): Promise<Browser> {
     console.error('[Browser] Connected to Chrome CDP');
     return browser;
   } catch {
-    throw new Error(
-      `Cannot connect to Chrome. Start Chrome with:\n` +
-        `/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222`
-    );
+    const hint = process.platform === 'win32'
+      ? `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222`
+      : `/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222`;
+    throw new Error(`Cannot connect to Chrome. Start Chrome with:\n  ${hint}`);
   }
 }
 
@@ -240,22 +227,49 @@ async function handleBrowser(args: Record<string, unknown>): Promise<string> {
   }
 }
 
-// Notification (uses terminal-notifier or osascript as fallback)
+// Cross-platform notification
 async function handleNotify(args: Record<string, unknown>): Promise<string> {
   const title = args.title as string;
   const body = (args.body as string) || '';
 
-  // Escape AppleScript special characters to prevent command injection
-  const escapeAppleScript = (str: string): string => {
-    return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  };
-
   try {
-    // Try terminal-notifier first (brew install terminal-notifier)
+    if (process.platform === 'win32') {
+      // Windows: use PowerShell toast notification
+      // Escape single quotes (PowerShell), backticks, and dollar signs to prevent injection
+      const escapePowerShell = (str: string): string =>
+        str.replace(/'/g, "''").replace(/`/g, '``').replace(/\$/g, '`$');
+      const safeTitle = escapePowerShell(title);
+      const safeBody = escapePowerShell(body);
+      const ps = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; ` +
+        `$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); ` +
+        `$text = $xml.GetElementsByTagName('text'); ` +
+        `$text[0].AppendChild($xml.CreateTextNode('${safeTitle}')) | Out-Null; ` +
+        `$text[1].AppendChild($xml.CreateTextNode('${safeBody}')) | Out-Null; ` +
+        `$toast = [Windows.UI.Notifications.ToastNotification]::new($xml); ` +
+        `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Pocket Agent').Show($toast)`,
+      ]);
+      return await new Promise<string>((resolve) => {
+        ps.on('close', (code) => {
+          if (code === 0) {
+            resolve(JSON.stringify({ success: true, method: 'powershell-toast' }));
+          } else {
+            resolve(JSON.stringify({ error: 'PowerShell toast notification failed' }));
+          }
+        });
+        ps.on('error', () => resolve(JSON.stringify({ error: 'PowerShell not available' })));
+      });
+    }
+
+    // macOS: terminal-notifier with osascript fallback
+    const escapeAppleScript = (str: string): string => {
+      return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    };
+
     const result = await new Promise<string>((resolve) => {
       const child = spawn('terminal-notifier', ['-title', title, '-message', body, '-sound', 'default']);
       child.on('error', () => {
-        // Fall back to osascript - use escaped strings to prevent injection
         const safeBody = escapeAppleScript(body);
         const safeTitle = escapeAppleScript(title);
         const osa = spawn('osascript', ['-e', `display notification "${safeBody}" with title "${safeTitle}"`]);
@@ -270,62 +284,6 @@ async function handleNotify(args: Record<string, unknown>): Promise<string> {
   }
 }
 
-/**
- * Escape a shell argument for safe use in shell commands
- * Uses single quotes and escapes embedded single quotes
- */
-function escapeShellArg(arg: string): string {
-  return `'${arg.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Validate that cwd is a safe path (no path traversal)
- */
-function isValidCwd(cwd: string): boolean {
-  // Reject paths with .. to prevent path traversal
-  // Allow absolute paths and relative paths without traversal
-  return !cwd.includes('..') && !cwd.includes('\0');
-}
-
-// PTY execution
-async function handlePtyExec(args: Record<string, unknown>): Promise<string> {
-  const command = args.command as string;
-  const cwd = (args.cwd as string) || process.cwd();
-  const timeout = (args.timeout as number) || 60000;
-
-  // Validate cwd to prevent path traversal
-  if (!isValidCwd(cwd)) {
-    return JSON.stringify({ success: false, error: 'Invalid working directory' });
-  }
-
-  return new Promise((resolve) => {
-    let output = '';
-    const shell = os.platform() === 'win32' ? 'cmd.exe' : '/bin/bash';
-    // Escape command to prevent injection when concatenated
-    const shellArgs = os.platform() === 'win32' ? ['/c', command] : ['-c', escapeShellArg(command)];
-
-    const child = spawn(shell, shellArgs, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
-
-    const timeoutId = setTimeout(() => {
-      child.kill();
-      resolve(JSON.stringify({ success: false, error: 'Timeout', output }));
-    }, timeout);
-
-    child.stdout?.on('data', (d) => (output += d.toString()));
-    child.stderr?.on('data', (d) => (output += d.toString()));
-
-    child.on('close', (code) => {
-      clearTimeout(timeoutId);
-      resolve(JSON.stringify({ success: code === 0, exitCode: code, output }));
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(timeoutId);
-      resolve(JSON.stringify({ success: false, error: err.message }));
-    });
-  });
-}
-
 // Handle tool calls
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
   console.error(`[MCP] Tool call: ${name}`, JSON.stringify(args).slice(0, 200));
@@ -335,8 +293,6 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return handleBrowser(args);
     case 'notify':
       return handleNotify(args);
-    case 'pty_exec':
-      return handlePtyExec(args);
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }

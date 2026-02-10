@@ -1,54 +1,46 @@
-import { MemoryManager, Message, SmartContextOptions } from '../memory';
-import { buildMCPServers, buildSdkMcpServers, setMemoryManager, setSoulMemoryManager, ToolsConfig, validateToolsConfig, setCurrentSessionId } from '../tools';
+import { MemoryManager, Message } from '../memory';
+import { buildMCPServers, buildSdkMcpServers, setMemoryManager, setSoulMemoryManager, ToolsConfig, validateToolsConfig, getCurrentSessionId } from '../tools';
 import { closeBrowserManager } from '../browser';
 import { loadIdentity } from '../config/identity';
 import { loadInstructions } from '../config/instructions';
 import { SettingsManager } from '../settings';
 import { EventEmitter } from 'events';
-
-// Token limits - defaults, can be overridden by settings
-const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
-const COMPACTION_RATIO = 0.8; // Start compacting at 80% capacity
-
-// Smart context defaults
-const DEFAULT_RECENT_MESSAGE_LIMIT = 20;
-const DEFAULT_ROLLING_SUMMARY_INTERVAL = 50;
-const DEFAULT_SEMANTIC_RETRIEVAL_COUNT = 5;
-
-// Get token limits from settings
-function getTokenLimits(): { maxContextTokens: number; compactionThreshold: number } {
-  const maxContextTokens = Number(SettingsManager.get('agent.maxContextTokens')) || DEFAULT_MAX_CONTEXT_TOKENS;
-  const compactionThreshold = Math.floor(maxContextTokens * COMPACTION_RATIO);
-  return { maxContextTokens, compactionThreshold };
-}
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { buildCanUseToolCallback, buildPreToolUseHook, setStatusEmitter } from './safety';
+import { PersistentSDKSession, TurnResult } from './persistent-session';
 
 // Provider configuration for different LLM backends
-type ProviderType = 'anthropic' | 'moonshot';
+type ProviderType = 'anthropic' | 'moonshot' | 'glm';
 
 interface ProviderConfig {
   baseUrl?: string;
-  useAuthToken: boolean;  // Use ANTHROPIC_AUTH_TOKEN (Bearer) vs ANTHROPIC_API_KEY (x-api-key)
 }
 
 const PROVIDER_CONFIGS: Record<ProviderType, ProviderConfig> = {
   'anthropic': {
     // No baseUrl = uses default Anthropic endpoint
-    useAuthToken: false,
   },
   'moonshot': {
     baseUrl: 'https://api.moonshot.ai/anthropic/',
-    useAuthToken: true,  // Moonshot uses Bearer token auth
+  },
+  'glm': {
+    baseUrl: 'https://api.z.ai/api/anthropic/',
   },
 };
 
 // Model to provider mapping
 const MODEL_PROVIDERS: Record<string, ProviderType> = {
   // Anthropic models
+  'claude-opus-4-6': 'anthropic',
   'claude-opus-4-5-20251101': 'anthropic',
   'claude-sonnet-4-5-20250929': 'anthropic',
   'claude-haiku-4-5-20251001': 'anthropic',
   // Moonshot/Kimi models
   'kimi-k2.5': 'moonshot',
+  // Z.AI GLM models
+  'glm-4.7': 'glm',
 };
 
 /**
@@ -69,8 +61,6 @@ function configureProviderEnvironment(model: string): void {
   // Clear all provider-related env vars first
   delete process.env.ANTHROPIC_BASE_URL;
   delete process.env.ANTHROPIC_AUTH_TOKEN;
-  // Note: ANTHROPIC_API_KEY may be set by OAuth or settings, don't clear if using Anthropic
-
   if (provider === 'moonshot') {
     // Moonshot requires base URL and uses Bearer token auth
     const moonshotKey = SettingsManager.get('moonshot.apiKey');
@@ -80,32 +70,46 @@ function configureProviderEnvironment(model: string): void {
 
     process.env.ANTHROPIC_BASE_URL = config.baseUrl;
     process.env.ANTHROPIC_AUTH_TOKEN = moonshotKey;
-    // Clear ANTHROPIC_API_KEY so SDK uses AUTH_TOKEN instead
-    process.env.ANTHROPIC_API_KEY = '';
+    // Set ANTHROPIC_API_KEY so the SDK subprocess passes its auth check.
+    // The request sends both x-api-key and Authorization: Bearer headers;
+    // OpenAI-compatible providers use Bearer and ignore x-api-key.
+    process.env.ANTHROPIC_API_KEY = moonshotKey;
 
     console.log('[AgentManager] Provider configured: Moonshot (Kimi)');
+  } else if (provider === 'glm') {
+    // Z.AI GLM requires base URL and uses Bearer token auth
+    const glmKey = SettingsManager.get('glm.apiKey');
+    if (!glmKey) {
+      throw new Error('Z.AI GLM API key not configured. Please add your key in Settings > LLM.');
+    }
+
+    process.env.ANTHROPIC_BASE_URL = config.baseUrl;
+    process.env.ANTHROPIC_AUTH_TOKEN = glmKey;
+    // Set ANTHROPIC_API_KEY so the SDK subprocess passes its auth check.
+    // The request sends both x-api-key and Authorization: Bearer headers;
+    // OpenAI-compatible providers use Bearer and ignore x-api-key.
+    process.env.ANTHROPIC_API_KEY = glmKey;
+
+    console.log('[AgentManager] Provider configured: Z.AI GLM');
   } else {
-    // Anthropic provider - ensure no base URL override
+    // Anthropic provider - restore correct API key and clear non-Anthropic vars
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_AUTH_TOKEN;
+
+    // Restore Anthropic API key (may have been overwritten by non-Anthropic provider key)
+    const anthropicKey = SettingsManager.get('anthropic.apiKey');
+    if (anthropicKey) {
+      process.env.ANTHROPIC_API_KEY = anthropicKey;
+    }
 
     console.log('[AgentManager] Provider configured: Anthropic');
   }
 }
 
-// Get smart context options from settings
-function getSmartContextOptions(currentQuery?: string): SmartContextOptions {
-  return {
-    recentMessageLimit: Number(SettingsManager.get('agent.recentMessageLimit')) || DEFAULT_RECENT_MESSAGE_LIMIT,
-    rollingSummaryInterval: Number(SettingsManager.get('agent.rollingSummaryInterval')) || DEFAULT_ROLLING_SUMMARY_INTERVAL,
-    semanticRetrievalCount: Number(SettingsManager.get('agent.semanticRetrievalCount')) || DEFAULT_SEMANTIC_RETRIEVAL_COUNT,
-    currentQuery,
-  };
-}
-
 // Status event types
 export type AgentStatus = {
-  type: 'thinking' | 'tool_start' | 'tool_end' | 'responding' | 'done' | 'subagent_start' | 'subagent_update' | 'subagent_end' | 'queued' | 'queue_processing';
+  type: 'thinking' | 'tool_start' | 'tool_end' | 'tool_blocked' | 'responding' | 'done' | 'subagent_start' | 'subagent_update' | 'subagent_end' | 'queued' | 'queue_processing' | 'teammate_start' | 'teammate_idle' | 'teammate_message' | 'task_completed' | 'background_task_start' | 'background_task_output' | 'background_task_end';
+  sessionId?: string;
   toolName?: string;
   toolInput?: string;
   message?: string;
@@ -116,10 +120,54 @@ export type AgentStatus = {
   // Queue tracking
   queuePosition?: number;
   queuedMessage?: string;
+  // Safety blocking
+  blockedReason?: string;
+  // Pocket CLI indicator
+  isPocketCli?: boolean;
+  // Team tracking
+  teammateName?: string;
+  teamName?: string;
+  taskId?: string;
+  taskSubject?: string;
+  // Background task tracking
+  backgroundTaskId?: string;
+  backgroundTaskDescription?: string;
+  backgroundTaskCount?: number;
 };
 
 // SDK types (loaded dynamically)
 type SDKQuery = AsyncGenerator<unknown, void>;
+type CanUseToolCallback = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal; toolUseID: string }
+) => Promise<{ behavior: 'allow' } | { behavior: 'deny'; message: string; interrupt: boolean }>;
+type PreToolUseHookCallback = (input: { tool_name: string; tool_input: unknown }) => Promise<{
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse';
+    permissionDecision: 'allow' | 'deny';
+    permissionDecisionReason?: string;
+  };
+}>;
+// Hook callback types for team events
+type TeammateIdleHookCallback = (input: { teammate_name: string; team_name: string }) => Promise<{
+  hookSpecificOutput: {
+    hookEventName: 'TeammateIdle';
+  };
+}>;
+type TaskCompletedHookCallback = (input: { task_id: string; task_subject: string; task_description?: string; teammate_name?: string; team_name?: string }) => Promise<{
+  hookSpecificOutput: {
+    hookEventName: 'TaskCompleted';
+  };
+}>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type UserPromptSubmitHookCallback = (input: any, toolUseID: string | undefined, options: { signal: AbortSignal }) => Promise<{
+  hookSpecificOutput: {
+    hookEventName: 'UserPromptSubmit';
+    additionalContext?: string;
+  };
+}>;
+
 type SDKOptions = {
   model?: string;
   cwd?: string;
@@ -129,9 +177,18 @@ type SDKOptions = {
   tools?: string[] | { type: 'preset'; preset: 'claude_code' };
   allowedTools?: string[];
   persistSession?: boolean;
+  resume?: string;  // SDK session ID to resume
   systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string };
   mcpServers?: Record<string, unknown>;
-  settingSources?: ('project' | 'user')[];  // Load skills from .claude/skills/
+  settingSources?: ('project' | 'user')[];
+  canUseTool?: CanUseToolCallback;  // Pre-tool-use validation callback
+  env?: { [envVar: string]: string | undefined };  // Environment variables for Claude Code process
+  hooks?: {
+    PreToolUse?: Array<{ hooks: PreToolUseHookCallback[] }>;
+    UserPromptSubmit?: Array<{ hooks: UserPromptSubmitHookCallback[] }>;
+    TeammateIdle?: Array<{ hooks: TeammateIdleHookCallback[] }>;
+    TaskCompleted?: Array<{ hooks: TaskCompletedHookCallback[] }>;
+  };
 };
 
 // Thinking level to token budget mapping
@@ -142,8 +199,37 @@ const THINKING_BUDGETS: Record<string, number | undefined> = {
   'extended': 32000,
 };
 
-// Dynamic SDK loader
-let sdkQuery: ((params: { prompt: string; options?: SDKOptions }) => SDKQuery) | null = null;
+// Image content for multimodal messages
+export interface ImageContent {
+  type: 'base64';
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  data: string;  // base64 encoded
+}
+
+// Attachment info for tracking attachments in metadata
+export interface AttachmentInfo {
+  hasAttachment: boolean;
+  attachmentType?: 'photo' | 'voice' | 'audio' | 'document' | 'location';
+}
+
+// Content block types for SDK
+type TextBlock = { type: 'text'; text: string };
+type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+type ContentBlock = TextBlock | ImageBlock;
+
+// SDK User Message type for async iterable
+interface SDKUserMessage {
+  type: 'user';
+  message: {
+    role: 'user';
+    content: string | ContentBlock[];
+  };
+  parent_tool_use_id: string | null;
+  session_id: string;
+}
+
+// Dynamic SDK loader - prompt can be string or async iterable of messages
+let sdkQuery: ((params: { prompt: string | AsyncIterable<SDKUserMessage>; options?: SDKOptions }) => SDKQuery) | null = null;
 
 // Use Function to preserve native import() - TypeScript converts import() to require() in CommonJS
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<unknown>;
@@ -160,8 +246,15 @@ export interface AgentConfig {
   memory: MemoryManager;
   projectRoot?: string;
   workspace?: string;  // Isolated working directory for agent file operations
+  dataDir?: string;    // App data directory (e.g. ~/Library/Application Support/pocket-agent)
   model?: string;
   tools?: ToolsConfig;
+}
+
+export interface MediaAttachment {
+  type: 'image';
+  filePath: string;       // absolute path on disk
+  mimeType: string;       // e.g. 'image/png'
 }
 
 export interface ProcessResult {
@@ -169,6 +262,9 @@ export interface ProcessResult {
   tokensUsed: number;
   wasCompacted: boolean;
   suggestedPrompt?: string;
+  contextTokens?: number;
+  contextWindow?: number;
+  media?: MediaAttachment[];
 }
 
 /**
@@ -179,15 +275,19 @@ class AgentManagerClass extends EventEmitter {
   private memory: MemoryManager | null = null;
   private projectRoot: string = process.cwd();
   private workspace: string = process.cwd();  // Isolated working directory for agent
-  private model: string = 'claude-opus-4-5-20251101';
+  private model: string = 'claude-opus-4-6';
   private toolsConfig: ToolsConfig | null = null;
   private initialized: boolean = false;
   private identity: string = '';
   private instructions: string = '';
   private abortControllersBySession: Map<string, AbortController> = new Map();
   private processingBySession: Map<string, boolean> = new Map();
-  private lastSuggestedPrompt: string | undefined = undefined;
-  private messageQueueBySession: Map<string, Array<{ message: string; channel: string; resolve: (result: ProcessResult) => void; reject: (error: Error) => void }>> = new Map();
+  private lastSuggestedPromptBySession: Map<string, string | undefined> = new Map();
+  private messageQueueBySession: Map<string, Array<{ message: string; channel: string; images?: ImageContent[]; attachmentInfo?: AttachmentInfo; resolve: (result: ProcessResult) => void; reject: (error: Error) => void }>> = new Map();
+  private sdkSessionIdBySession: Map<string, string> = new Map();
+  private persistentSessions: Map<string, PersistentSDKSession> = new Map();
+  private contextUsageBySession: Map<string, { contextTokens: number; contextWindow: number }> = new Map();
+  private pendingMedia: MediaAttachment[] = [];
 
   private constructor() {
     super();
@@ -204,15 +304,24 @@ class AgentManagerClass extends EventEmitter {
     this.memory = config.memory;
     this.projectRoot = config.projectRoot || process.cwd();
     this.workspace = config.workspace || this.projectRoot;
-    this.model = config.model || 'claude-opus-4-5-20251101';
+    this.model = config.model || 'claude-opus-4-6';
     this.toolsConfig = config.tools || null;
     this.initialized = true;
 
+    // Isolate SDK session storage from global Claude Code installation
+    if (config.dataDir) {
+      process.env.CLAUDE_CONFIG_DIR = path.join(config.dataDir, '.claude');
+    }
+
     this.identity = loadIdentity();
     this.instructions = loadInstructions();
-    this.memory.setSummarizer(this.createSummary.bind(this));
     setMemoryManager(this.memory);
     setSoulMemoryManager(this.memory);
+
+    // Set up safety status emitter for UI feedback on blocked tools
+    setStatusEmitter((status) => {
+      this.emitStatus(status);
+    });
 
     console.log('[AgentManager] Initialized');
     console.log('[AgentManager] Project root:', this.projectRoot);
@@ -259,10 +368,33 @@ class AgentManagerClass extends EventEmitter {
     return this.initialized && this.memory !== null;
   }
 
+  getModel(): string {
+    return this.model;
+  }
+
+  setModel(model: string): void {
+    this.model = model;
+    SettingsManager.set('agent.model', model);
+    console.log('[AgentManager] Model changed to:', model);
+
+    // Update model on all live persistent sessions
+    for (const [sid, session] of this.persistentSessions.entries()) {
+      if (session.isAlive()) {
+        session.setModel(model).catch(err => {
+          console.error(`[AgentManager] Failed to set model on session ${sid}:`, err);
+        });
+      }
+    }
+
+    this.emit('model:changed', model);
+  }
+
   async processMessage(
     userMessage: string,
     channel: string = 'default',
-    sessionId: string = 'default'
+    sessionId: string = 'default',
+    images?: ImageContent[],
+    attachmentInfo?: AttachmentInfo
   ): Promise<ProcessResult> {
     if (!this.memory) {
       throw new Error('AgentManager not initialized - call initialize() first');
@@ -270,10 +402,10 @@ class AgentManagerClass extends EventEmitter {
 
     // If already processing, queue the message
     if (this.processingBySession.get(sessionId)) {
-      return this.queueMessage(userMessage, channel, sessionId);
+      return this.queueMessage(userMessage, channel, sessionId, images, attachmentInfo);
     }
 
-    return this.executeMessage(userMessage, channel, sessionId);
+    return this.executeMessage(userMessage, channel, sessionId, images, attachmentInfo);
   }
 
   /**
@@ -282,7 +414,9 @@ class AgentManagerClass extends EventEmitter {
   private queueMessage(
     userMessage: string,
     channel: string,
-    sessionId: string
+    sessionId: string,
+    images?: ImageContent[],
+    attachmentInfo?: AttachmentInfo
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       // Get or create queue for this session
@@ -292,7 +426,7 @@ class AgentManagerClass extends EventEmitter {
       const queue = this.messageQueueBySession.get(sessionId)!;
 
       // Add to queue
-      queue.push({ message: userMessage, channel, resolve, reject });
+      queue.push({ message: userMessage, channel, images, attachmentInfo, resolve, reject });
 
       const queuePosition = queue.length;
       console.log(`[AgentManager] Message queued at position ${queuePosition} for session ${sessionId}`);
@@ -300,9 +434,10 @@ class AgentManagerClass extends EventEmitter {
       // Emit queued status
       this.emitStatus({
         type: 'queued',
+        sessionId,
         queuePosition,
         queuedMessage: userMessage.slice(0, 100),
-        message: `Message queued (#${queuePosition})`,
+        message: `in the litter queue (#${queuePosition})`,
       });
     });
   }
@@ -320,12 +455,13 @@ class AgentManagerClass extends EventEmitter {
     // Emit status that we're processing a queued message
     this.emitStatus({
       type: 'queue_processing',
+      sessionId,
       queuedMessage: next.message.slice(0, 100),
-      message: 'Processing queued message...',
+      message: 'digging it up now...',
     });
 
     try {
-      const result = await this.executeMessage(next.message, next.channel, sessionId);
+      const result = await this.executeMessage(next.message, next.channel, sessionId, next.images, next.attachmentInfo);
       next.resolve(result);
     } catch (error) {
       next.reject(error instanceof Error ? error : new Error(String(error)));
@@ -334,11 +470,15 @@ class AgentManagerClass extends EventEmitter {
 
   /**
    * Actually execute a message (internal implementation)
+   * Uses persistent sessions: first message creates a Query, subsequent messages
+   * use streamInput() to keep the subprocess alive (preserving background tasks).
    */
   private async executeMessage(
     userMessage: string,
     channel: string,
-    sessionId: string
+    sessionId: string,
+    images?: ImageContent[],
+    attachmentInfo?: AttachmentInfo
   ): Promise<ProcessResult> {
     // Memory should already be checked by processMessage, but guard anyway
     if (!this.memory) {
@@ -348,92 +488,249 @@ class AgentManagerClass extends EventEmitter {
     const memory = this.memory; // Local reference for TypeScript narrowing
 
     this.processingBySession.set(sessionId, true);
-    const abortController = new AbortController();
-    this.abortControllersBySession.set(sessionId, abortController);
-    this.lastSuggestedPrompt = undefined;
-    let wasCompacted = false;
-
-    // Set session context for MCP tools to use
-    setCurrentSessionId(sessionId);
+    this.lastSuggestedPromptBySession.set(sessionId, undefined);
+    this.pendingMedia = [];
 
     try {
-      // Use smart context: recent messages + rolling summary + semantic retrieval
-      const smartContextOptions = getSmartContextOptions(userMessage);
-      const smartContext = await memory.getSmartContext(sessionId, smartContextOptions);
-      const factsContext = memory.getFactsForContext();
-      const soulContext = memory.getSoulContext();
+      const existingSession = this.persistentSessions.get(sessionId);
+      let turnResult: TurnResult;
 
-      console.log(`[AgentManager] Smart context: ${smartContext.stats.recentCount} recent, ${smartContext.stats.summarizedMessages} summarized, ${smartContext.stats.relevantCount} relevant (${smartContext.totalTokens} tokens)`);
+      if (existingSession?.isAlive()) {
+        // === Existing session: send via streamInput ===
+        console.log(`[AgentManager] Sending to existing persistent session: ${sessionId}`);
+        this.emitStatus({ type: 'thinking', sessionId, message: '*stretches paws* thinking...' });
 
-      const contextParts: string[] = [];
+        // Build content blocks for images
+        const contentBlocks = images && images.length > 0
+          ? [
+              { type: 'text' as const, text: userMessage },
+              ...images.map(img => ({
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type: img.mediaType,
+                  data: img.data,
+                },
+              })),
+            ]
+          : undefined;
 
-      // Add rolling summary of older conversations
-      if (smartContext.rollingSummary) {
-        contextParts.push(`[Summary of previous conversations]\n${smartContext.rollingSummary}`);
-      }
-
-      // Add semantically relevant past messages
-      if (smartContext.relevantMessages.length > 0) {
-        const relevantText = smartContext.relevantMessages
-          .map(m => {
-            const timeStr = m.timestamp ? this.formatMessageTimestamp(m.timestamp) : '';
-            const prefix = timeStr ? `${m.role.toUpperCase()} [${timeStr}]` : m.role.toUpperCase();
-            return `${prefix}: ${m.content}`;
-          })
-          .join('\n\n');
-        contextParts.push(`[Relevant past context]\n${relevantText}`);
-      }
-
-      // Add recent conversation
-      if (smartContext.recentMessages.length > 0) {
-        const historyText = smartContext.recentMessages
-          .map(m => {
-            const timeStr = m.timestamp ? this.formatMessageTimestamp(m.timestamp) : '';
-            const prefix = timeStr ? `${m.role.toUpperCase()} [${timeStr}]` : m.role.toUpperCase();
-            return `${prefix}: ${m.content}`;
-          })
-          .join('\n\n');
-        contextParts.push(`[Recent conversation]\n${historyText}`);
-      }
-
-      const fullPrompt = contextParts.length > 0
-        ? `${contextParts.join('\n\n---\n\n')}\n\n---\n\nUser: ${userMessage}`
-        : userMessage;
-
-      const query = await loadSDK();
-      if (!query) throw new Error('Failed to load SDK');
-
-      // Get last user message timestamp for temporal context
-      const userMessages = smartContext.recentMessages.filter(m => m.role === 'user');
-      const lastUserMessageTimestamp = userMessages.length > 0
-        ? userMessages[userMessages.length - 1].timestamp
-        : undefined;
-
-      const options = await this.buildOptions(factsContext, soulContext, abortController, lastUserMessageTimestamp);
-
-      // Configure provider environment based on model (sets ANTHROPIC_BASE_URL, AUTH_TOKEN, etc.)
-      configureProviderEnvironment(this.model);
-
-      console.log('[AgentManager] Calling query() with model:', options.model, 'thinking:', options.maxThinkingTokens || 'default');
-      this.emitStatus({ type: 'thinking', message: 'hmm let me think 🤔' });
-
-      const queryResult = query({ prompt: fullPrompt, options });
-      let response = '';
-
-      for await (const message of queryResult) {
-        // Check if aborted
-        if (abortController.signal.aborted) {
-          console.log('[AgentManager] Query aborted by user');
-          throw new Error('Query stopped by user');
+        turnResult = await existingSession.send(userMessage, contentBlocks);
+      } else {
+        // === New session: create Query with first message ===
+        // Clean up dead session if present
+        if (existingSession) {
+          this.persistentSessions.delete(sessionId);
         }
-        this.processStatusFromMessage(message);
-        response = this.extractFromMessage(message, response);
+
+        // Look up SDK session for resume (in-memory cache first, then DB)
+        let sdkSessionId = this.sdkSessionIdBySession.get(sessionId)
+          || memory.getSdkSessionId(sessionId)
+          || undefined;
+
+        if (sdkSessionId) {
+          console.log(`[AgentManager] Resuming SDK session: ${sdkSessionId}`);
+        } else {
+          console.log('[AgentManager] Starting new persistent SDK session');
+        }
+
+        const queryFn = await loadSDK();
+        if (!queryFn) throw new Error('Failed to load SDK');
+
+        // Build options with dynamic context
+        const options = await this.buildPersistentOptions(memory, sessionId, sdkSessionId);
+
+        console.log('[AgentManager] Calling query() with model:', options.model, 'thinking:', options.maxThinkingTokens || 'default');
+        this.emitStatus({ type: 'thinking', sessionId, message: '*stretches paws* thinking...' });
+
+        // Create persistent session
+        const session = new PersistentSDKSession(
+          sessionId,
+          (msg) => this.processStatusFromMessage(msg),
+          (msg, current) => this.extractFromMessage(msg, current)
+        );
+
+        // Listen for SDK session ID capture
+        session.on('sdkSessionId', (capturedId: string) => {
+          this.sdkSessionIdBySession.set(sessionId, capturedId);
+          memory.setSdkSessionId(sessionId, capturedId);
+        });
+
+        // Listen for session closure
+        session.on('closed', () => {
+          console.log(`[AgentManager] Persistent session closed: ${sessionId}`);
+        });
+
+        this.persistentSessions.set(sessionId, session);
+
+        // Build content blocks for images (if any)
+        const firstContentBlocks: ContentBlock[] | undefined = images && images.length > 0
+          ? [
+              { type: 'text' as const, text: userMessage },
+              ...images.map(img => ({
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type: img.mediaType,
+                  data: img.data,
+                },
+              })),
+            ]
+          : undefined;
+
+        if (firstContentBlocks) {
+          console.log(`[AgentManager] Starting persistent session with ${images!.length} image(s)`);
+        }
+
+        try {
+          turnResult = await session.start(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            queryFn as any,
+            userMessage,
+            options as unknown as Record<string, unknown>,
+            firstContentBlocks
+          );
+        } catch (startError) {
+          // If resume failed (corrupted/missing SDK session), retry without resume
+          if (sdkSessionId) {
+            const errMsg = startError instanceof Error ? startError.message : String(startError);
+            console.warn(`[AgentManager] Resume failed (${errMsg}), retrying without resume...`);
+            sdkSessionId = undefined;
+            this.sdkSessionIdBySession.delete(sessionId);
+            memory.clearSdkSessionId(sessionId);
+
+            // Clean up failed session
+            session.close();
+            this.persistentSessions.delete(sessionId);
+
+            // Create new session without resume
+            const freshOptions = await this.buildPersistentOptions(memory, sessionId, undefined);
+            const freshSession = new PersistentSDKSession(
+              sessionId,
+              (msg) => this.processStatusFromMessage(msg),
+              (msg, current) => this.extractFromMessage(msg, current)
+            );
+
+            freshSession.on('sdkSessionId', (capturedId: string) => {
+              this.sdkSessionIdBySession.set(sessionId, capturedId);
+              memory.setSdkSessionId(sessionId, capturedId);
+            });
+
+            freshSession.on('closed', () => {
+              console.log(`[AgentManager] Persistent session closed: ${sessionId}`);
+            });
+
+            this.persistentSessions.set(sessionId, freshSession);
+
+            turnResult = await freshSession.start(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              queryFn as any,
+              userMessage,
+              freshOptions as unknown as Record<string, unknown>,
+              firstContentBlocks
+            );
+          } else {
+            throw startError;
+          }
+        }
       }
 
-      this.emitStatus({ type: 'done' });
+      // === Check for stale session errors and retry without resume ===
+      if (turnResult.errors?.some(e => e.includes('No conversation found with session ID'))) {
+        const staleId = this.sdkSessionIdBySession.get(sessionId);
+        console.warn(`[AgentManager] Stale SDK session detected (${staleId}), retrying without resume...`);
 
+        // Clear the stale session reference
+        this.sdkSessionIdBySession.delete(sessionId);
+        memory.clearSdkSessionId(sessionId);
+
+        // Close the dead session
+        const deadSession = this.persistentSessions.get(sessionId);
+        if (deadSession) {
+          deadSession.close();
+          this.persistentSessions.delete(sessionId);
+        }
+
+        // Retry with a fresh session (no resume)
+        const queryFn = await loadSDK();
+        if (!queryFn) throw new Error('Failed to load SDK');
+
+        const freshOptions = await this.buildPersistentOptions(memory, sessionId, undefined);
+        const freshSession = new PersistentSDKSession(
+          sessionId,
+          (msg) => this.processStatusFromMessage(msg),
+          (msg, current) => this.extractFromMessage(msg, current)
+        );
+
+        freshSession.on('sdkSessionId', (capturedId: string) => {
+          this.sdkSessionIdBySession.set(sessionId, capturedId);
+          memory.setSdkSessionId(sessionId, capturedId);
+        });
+
+        freshSession.on('closed', () => {
+          console.log(`[AgentManager] Persistent session closed: ${sessionId}`);
+        });
+
+        this.persistentSessions.set(sessionId, freshSession);
+        this.emitStatus({ type: 'thinking', sessionId, message: 'reconnecting...' });
+
+        // Build content blocks for images (if any)
+        const retryContentBlocks = images && images.length > 0
+          ? [
+              { type: 'text' as const, text: userMessage },
+              ...images.map(img => ({
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type: img.mediaType,
+                  data: img.data,
+                },
+              })),
+            ]
+          : undefined;
+
+        turnResult = await freshSession.start(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          queryFn as any,
+          userMessage,
+          freshOptions as unknown as Record<string, unknown>,
+          retryContentBlocks
+        );
+      }
+
+      // === Process turn result (same for both paths) ===
+      let response = turnResult.response;
+      const wasCompacted = turnResult.wasCompacted;
+
+      // Store context window usage from SDK result
+      if (turnResult.contextTokens !== undefined || turnResult.contextWindow !== undefined) {
+        const existing = this.contextUsageBySession.get(sessionId);
+        this.contextUsageBySession.set(sessionId, {
+          contextTokens: turnResult.contextTokens ?? existing?.contextTokens ?? 0,
+          contextWindow: turnResult.contextWindow ?? existing?.contextWindow ?? 0,
+        });
+      }
+
+      this.emitStatus({ type: 'done', sessionId });
+
+      // If no text response, request a summary via the persistent session
       if (!response) {
-        response = 'I processed your request but have no text response.';
+        const currentSession = this.persistentSessions.get(sessionId);
+        if (currentSession?.isAlive()) {
+          console.log('[AgentManager] No text response, requesting summary...');
+          this.emitStatus({ type: 'thinking', sessionId, message: 'summarizing...' });
+
+          try {
+            const summaryResult = await currentSession.send('Briefly summarize what you just did in 1-2 sentences.');
+            response = summaryResult.response || 'Done.';
+          } catch {
+            response = 'Done.';
+          }
+
+          this.emitStatus({ type: 'done', sessionId });
+        } else {
+          response = 'Done.';
+        }
       }
 
       // Skip saving HEARTBEAT_OK responses from scheduled jobs to memory/chat
@@ -458,13 +755,21 @@ class AgentManagerClass extends EventEmitter {
           messageToSave = `Reminder: ${reminderMatch[1]}`;
         }
 
-        // Add metadata for scheduled task messages
-        const metadata = channel.startsWith('cron:')
-          ? { source: 'scheduler', jobName: channel.slice(5) }
-          : undefined;
+        // Add metadata for message source and attachments
+        let metadata: Record<string, unknown> | undefined;
+        if (channel.startsWith('cron:')) {
+          metadata = { source: 'scheduler', jobName: channel.slice(5) };
+        } else if (channel === 'telegram') {
+          // Use explicit attachmentInfo if provided, otherwise check for images
+          const hasAttachment = attachmentInfo?.hasAttachment ?? (images && images.length > 0);
+          const attachmentType = attachmentInfo?.attachmentType ?? (images && images.length > 0 ? 'photo' : undefined);
+          metadata = { source: 'telegram', hasAttachment, attachmentType };
+        }
 
         const userMsgId = memory.saveMessage('user', messageToSave, sessionId, metadata);
-        const assistantMsgId = memory.saveMessage('assistant', response, sessionId, metadata);
+        // Assistant response doesn't need hasAttachment but keep source for consistency
+        const assistantMetadata = metadata ? { source: metadata.source } : undefined;
+        const assistantMsgId = memory.saveMessage('assistant', response, sessionId, assistantMetadata);
         console.log('[AgentManager] Saved messages to SQLite (session: ' + sessionId + ')');
 
         // Embed messages asynchronously for future semantic retrieval
@@ -476,12 +781,16 @@ class AgentManagerClass extends EventEmitter {
       this.extractAndStoreFacts(userMessage);
 
       const statsAfter = memory.getStats();
+      const contextUsage = this.contextUsageBySession.get(sessionId);
 
       return {
         response,
         tokensUsed: statsAfter.estimatedTokens,
         wasCompacted,
-        suggestedPrompt: this.lastSuggestedPrompt,
+        suggestedPrompt: this.lastSuggestedPromptBySession.get(sessionId),
+        contextTokens: contextUsage?.contextTokens,
+        contextWindow: contextUsage?.contextWindow,
+        media: this.pendingMedia.length > 0 ? this.pendingMedia : undefined,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -492,15 +801,12 @@ class AgentManagerClass extends EventEmitter {
       // Log full error object for debugging
       console.error('[AgentManager] Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
 
-      // Only save user message if not aborted
-      if (!abortController.signal.aborted) {
-        memory.saveMessage('user', userMessage, sessionId);
-      }
+      // Only save user message if error is not user-initiated
+      memory.saveMessage('user', userMessage, sessionId);
 
       throw error;
     } finally {
       this.processingBySession.set(sessionId, false);
-      this.abortControllersBySession.delete(sessionId);
 
       // Process next message in queue (if any)
       // Use setTimeout(0) to avoid blocking the current promise resolution
@@ -529,14 +835,20 @@ class AgentManagerClass extends EventEmitter {
       for (const item of queue) {
         item.reject(new Error('Queue cleared'));
       }
-      queue.length = 0;
+      // Delete the key entirely to prevent memory leak from accumulated empty arrays
+      this.messageQueueBySession.delete(sessionId);
       console.log(`[AgentManager] Queue cleared for session ${sessionId}`);
+    } else if (queue) {
+      // Clean up empty queue entries
+      this.messageQueueBySession.delete(sessionId);
     }
   }
 
   /**
-   * Stop the query for a specific session (or any running query if no sessionId)
-   * Also clears any queued messages for that session
+   * Stop the current turn for a specific session (or any running query if no sessionId).
+   * Uses interrupt() on persistent sessions to stop the current turn while keeping
+   * the subprocess alive (preserving background tasks).
+   * Also clears any queued messages for that session.
    */
   stopQuery(sessionId?: string, clearQueuedMessages: boolean = true): boolean {
     if (sessionId) {
@@ -545,11 +857,20 @@ class AgentManagerClass extends EventEmitter {
         this.clearQueue(sessionId);
       }
 
+      const session = this.persistentSessions.get(sessionId);
+      if (session?.isAlive() && this.processingBySession.get(sessionId)) {
+        console.log(`[AgentManager] Interrupting persistent session ${sessionId} (bg tasks survive)...`);
+        session.interrupt().catch(err => {
+          console.error(`[AgentManager] Interrupt failed for ${sessionId}:`, err);
+        });
+        return true;
+      }
+
+      // Fallback to abort controller (for non-persistent queries)
       const abortController = this.abortControllersBySession.get(sessionId);
       if (this.processingBySession.get(sessionId) && abortController) {
-        console.log(`[AgentManager] Stopping query for session ${sessionId}...`);
+        console.log(`[AgentManager] Stopping query for session ${sessionId} via abort...`);
         abortController.abort();
-        this.emitStatus({ type: 'done' });
         return true;
       }
       return false;
@@ -561,11 +882,20 @@ class AgentManagerClass extends EventEmitter {
         if (clearQueuedMessages) {
           this.clearQueue(sid);
         }
+
+        const session = this.persistentSessions.get(sid);
+        if (session?.isAlive()) {
+          console.log(`[AgentManager] Interrupting persistent session ${sid}...`);
+          session.interrupt().catch(err => {
+            console.error(`[AgentManager] Interrupt failed for ${sid}:`, err);
+          });
+          return true;
+        }
+
         const abortController = this.abortControllersBySession.get(sid);
         if (abortController) {
-          console.log(`[AgentManager] Stopping query for session ${sid}...`);
+          console.log(`[AgentManager] Stopping query for session ${sid} via abort...`);
           abortController.abort();
-          this.emitStatus({ type: 'done' });
           return true;
         }
       }
@@ -587,67 +917,205 @@ class AgentManagerClass extends EventEmitter {
     return false;
   }
 
-  private async buildOptions(factsContext: string, soulContext: string, abortController: AbortController, lastMessageTimestamp?: string): Promise<SDKOptions> {
-    const appendParts: string[] = [];
+  /**
+   * Get the current workspace directory
+   */
+  getWorkspace(): string {
+    return this.workspace;
+  }
 
-    // Add temporal context first (current time awareness)
-    const temporalContext = this.buildTemporalContext(lastMessageTimestamp);
-    appendParts.push(temporalContext);
+  /**
+   * Get the default project root directory
+   */
+  getProjectRoot(): string {
+    return this.projectRoot;
+  }
+
+  /**
+   * Set the workspace directory for agent file operations.
+   * This takes effect on the next SDK query (cwd option).
+   * Closes all persistent sessions and clears SDK session mappings since sessions are tied to cwd.
+   */
+  setWorkspace(path: string): void {
+    console.log('[AgentManager] Workspace changed:', this.workspace, '->', path);
+    this.workspace = path;
+    // SDK sessions are stored per-cwd, so changing cwd invalidates them
+    this.closeAllPersistentSessions();
+    this.sdkSessionIdBySession.clear();
+  }
+
+  /**
+   * Reset workspace to default project root
+   * Closes all persistent sessions and clears SDK session mappings since sessions are tied to cwd.
+   */
+  resetWorkspace(): void {
+    console.log('[AgentManager] Workspace reset to project root:', this.projectRoot);
+    this.workspace = this.projectRoot;
+    this.closeAllPersistentSessions();
+    this.sdkSessionIdBySession.clear();
+  }
+
+  /**
+   * Clear the SDK session mapping for a given session (e.g., on session delete or clear).
+   * Also closes the persistent session subprocess.
+   */
+  clearSdkSessionMapping(sessionId: string): void {
+    this.closePersistentSession(sessionId);
+    this.sdkSessionIdBySession.delete(sessionId);
+    console.log(`[AgentManager] Cleared SDK session mapping for ${sessionId}`);
+  }
+
+  /**
+   * Close a single persistent session (kills subprocess and all background tasks).
+   */
+  closePersistentSession(sessionId: string): void {
+    const session = this.persistentSessions.get(sessionId);
+    if (session) {
+      console.log(`[AgentManager] Closing persistent session: ${sessionId}`);
+      session.close();
+      this.persistentSessions.delete(sessionId);
+    }
+  }
+
+  /**
+   * Close all persistent sessions (e.g., on workspace change or cleanup).
+   */
+  private closeAllPersistentSessions(): void {
+    for (const [sid, session] of this.persistentSessions.entries()) {
+      console.log(`[AgentManager] Closing persistent session: ${sid}`);
+      session.close();
+    }
+    this.persistentSessions.clear();
+  }
+
+  /**
+   * Build options for persistent sessions.
+   *
+   * Static context (identity, instructions, profile, capabilities) goes in systemPrompt.append
+   * since it only needs to be set once when the session is created.
+   *
+   * Dynamic context (temporal, facts, soul, daily logs) is injected per-message via
+   * the UserPromptSubmit hook's additionalContext, so it's fresh for each turn.
+   */
+  private async buildPersistentOptions(memory: MemoryManager, sessionId: string, sdkSessionId?: string): Promise<SDKOptions> {
+    // === Static context (set once at session creation) ===
+    const staticParts: string[] = [];
 
     if (this.instructions) {
-      appendParts.push(this.instructions);
+      staticParts.push(this.instructions);
     }
 
     if (this.identity) {
-      appendParts.push(this.identity);
+      staticParts.push(this.identity);
     }
 
     // Add user profile from settings
     const userProfile = SettingsManager.getFormattedProfile();
     if (userProfile) {
-      appendParts.push(userProfile);
-    }
-
-    if (factsContext) {
-      appendParts.push(factsContext);
-    }
-
-    if (soulContext) {
-      appendParts.push(soulContext);
-    }
-
-    // Add daily logs context (recent activity journal)
-    const dailyLogsContext = this.memory?.getDailyLogsContext(3);
-    if (dailyLogsContext) {
-      appendParts.push(dailyLogsContext);
+      staticParts.push(userProfile);
     }
 
     // Add capabilities information
     const capabilities = this.buildCapabilitiesPrompt();
     if (capabilities) {
-      appendParts.push(capabilities);
+      staticParts.push(capabilities);
     }
 
     // Get thinking level and convert to token budget
     const thinkingLevel = SettingsManager.get('agent.thinkingLevel') || 'normal';
     const thinkingBudget = THINKING_BUDGETS[thinkingLevel];
 
+    // Configure provider environment and capture env vars
+    configureProviderEnvironment(this.model);
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+    };
+    delete env.CLAUDE_CONFIG_DIR;
+
     const options: SDKOptions = {
       model: this.model,
-      cwd: this.workspace,  // Use isolated workspace for agent file operations
-      maxTurns: 20,
+      cwd: this.workspace,
+      maxTurns: 100,
       ...(thinkingBudget !== undefined && thinkingBudget > 0 && { maxThinkingTokens: thinkingBudget }),
-      abortController,
       tools: { type: 'preset', preset: 'claude_code' },
-      settingSources: ['project'],  // Load skills from .claude/skills/
+      settingSources: ['project'],
+      canUseTool: buildCanUseToolCallback(),
+      env,
+      hooks: {
+        PreToolUse: [buildPreToolUseHook()],
+        // Dynamic context injection: fresh facts/soul/temporal for each message
+        UserPromptSubmit: [{
+          hooks: [async () => {
+            const dynamicParts: string[] = [];
+
+            // Temporal context (current time)
+            const recentMsgs = memory.getRecentMessages(1, sessionId);
+            const lastUserMsg = recentMsgs.find(m => m.role === 'user');
+            const temporalContext = this.buildTemporalContext(lastUserMsg?.timestamp);
+            dynamicParts.push(temporalContext);
+
+            // Facts context
+            const factsContext = memory.getFactsForContext();
+            if (factsContext) {
+              dynamicParts.push(factsContext);
+            }
+
+            // Soul context
+            const soulContext = memory.getSoulContext();
+            if (soulContext) {
+              dynamicParts.push(soulContext);
+            }
+
+            // Daily logs
+            const dailyLogsContext = memory.getDailyLogsContext(3);
+            if (dailyLogsContext) {
+              dynamicParts.push(dailyLogsContext);
+            }
+
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'UserPromptSubmit' as const,
+                additionalContext: dynamicParts.join('\n\n'),
+              },
+            };
+          }],
+        }],
+        TeammateIdle: [{
+          hooks: [async (input: { teammate_name: string; team_name: string }) => {
+            this.emitStatus({
+              type: 'teammate_idle',
+              teammateName: input.teammate_name,
+              teamName: input.team_name,
+              message: `${input.teammate_name} is idle`,
+            });
+            return { hookSpecificOutput: { hookEventName: 'TeammateIdle' as const } };
+          }],
+        }],
+        TaskCompleted: [{
+          hooks: [async (input: { task_id: string; task_subject: string; task_description?: string; teammate_name?: string; team_name?: string }) => {
+            this.emitStatus({
+              type: 'task_completed',
+              taskId: input.task_id,
+              taskSubject: input.task_subject,
+              teammateName: input.teammate_name,
+              teamName: input.team_name,
+              message: `task done: ${input.task_subject}`,
+            });
+            return { hookSpecificOutput: { hookEventName: 'TaskCompleted' as const } };
+          }],
+        }],
+      },
       allowedTools: [
         // Built-in SDK tools
         'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'WebSearch', 'WebFetch',
-        'Skill',  // Enable skills from .claude/skills/
+        // Agent Teams tools
+        'TeammateTool', 'TeamCreate', 'SendMessage', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
+        // Background task tools (persist across turns with persistent sessions)
+        'TaskOutput', 'TaskStop', 'BashOutput', 'KillBash',
         // Custom MCP tools - browser & system
         'mcp__pocket-agent__browser',
         'mcp__pocket-agent__notify',
-        'mcp__pocket-agent__pty_exec',
         // Custom MCP tools - memory
         'mcp__pocket-agent__remember',
         'mcp__pocket-agent__forget',
@@ -675,15 +1143,20 @@ class AgentManagerClass extends EventEmitter {
         'mcp__pocket-agent__task_complete',
         'mcp__pocket-agent__task_delete',
         'mcp__pocket-agent__task_due',
+        // Custom MCP tools - project
+        'mcp__pocket-agent__set_project',
+        'mcp__pocket-agent__get_project',
+        'mcp__pocket-agent__clear_project',
       ],
-      persistSession: false,
+      persistSession: true,
+      ...(sdkSessionId && { resume: sdkSessionId }),
     };
 
-    if (appendParts.length > 0) {
+    if (staticParts.length > 0) {
       options.systemPrompt = {
         type: 'preset',
         preset: 'claude_code',
-        append: appendParts.join('\n\n'),
+        append: staticParts.join('\n\n'),
       };
     }
 
@@ -808,6 +1281,11 @@ Set requires_auth=true for pages needing login.
 For CDP, user must start Chrome with: --remote-debugging-port=9222
 \`\`\`
 
+### Image Display
+When you take screenshots or generate images, the image will be automatically displayed
+in the chat (both desktop and Telegram). You can reference screenshots in your responses
+and the user will see them inline.
+
 ### Native Notifications
 You can send native desktop notifications:
 
@@ -815,18 +1293,6 @@ You can send native desktop notifications:
 # Use the notify tool to alert the user
 notify(title="Task Complete", body="Your download has finished")
 notify(title="Reminder", body="Meeting in 5 minutes", urgency="critical")
-\`\`\`
-
-### Interactive Commands (PTY)
-For interactive CLI commands that need a terminal:
-
-\`\`\`bash
-# Use pty_exec instead of Bash when you need:
-# - Interactive prompts (npm init, git interactive)
-# - Commands that require TTY
-# - Colored output
-pty_exec(command="npm init")
-pty_exec(command="htop", timeout=30000)
 \`\`\`
 
 ### Limitations
@@ -839,14 +1305,21 @@ pty_exec(command="htop", timeout=30000)
     if (msg.type === 'assistant') {
       const content = msg.message?.content;
       if (Array.isArray(content)) {
+        // Extract image blocks and save to disk
+        this.extractImageBlocks(content);
+
         const textBlocks = content
           .filter((block: unknown) => (block as { type?: string })?.type === 'text')
           .map((block: unknown) => (block as { text: string }).text);
+        // If no text blocks (tool-only turn), preserve the accumulated response
+        if (textBlocks.length === 0) {
+          return current;
+        }
         const text = textBlocks.join('\n');
         // Extract and strip any trailing "User:" suggested prompts
         const { text: cleanedText, suggestion } = this.extractSuggestedPrompt(text);
         if (suggestion) {
-          this.lastSuggestedPrompt = suggestion;
+          this.lastSuggestedPromptBySession.set(getCurrentSessionId(), suggestion);
         }
         return cleanedText;
       }
@@ -858,13 +1331,107 @@ pty_exec(command="htop", timeout=30000)
         // Extract and strip any trailing "User:" suggested prompts from result
         const { text: cleanedText, suggestion } = this.extractSuggestedPrompt(result);
         if (suggestion) {
-          this.lastSuggestedPrompt = suggestion;
+          this.lastSuggestedPromptBySession.set(getCurrentSessionId(), suggestion);
         }
         return cleanedText;
       }
     }
 
     return current;
+  }
+
+  /**
+   * Extract image blocks from SDK assistant message content and save to disk.
+   * Images are accumulated in pendingMedia and included in the final ProcessResult.
+   */
+  private extractImageBlocks(content: unknown[]): void {
+    for (const block of content) {
+      const b = block as {
+        type?: string;
+        source?: { type?: string; media_type?: string; data?: string; url?: string };
+      };
+      if (b.type !== 'image' || !b.source) continue;
+
+      try {
+        const mediaDir = path.join(os.homedir(), 'Documents', 'Pocket-agent', 'media');
+        if (!fs.existsSync(mediaDir)) {
+          fs.mkdirSync(mediaDir, { recursive: true });
+        }
+
+        const mimeType = b.source.media_type || 'image/png';
+        const ext = mimeType.includes('jpeg') || mimeType.includes('jpg') ? '.jpg'
+          : mimeType.includes('gif') ? '.gif'
+          : mimeType.includes('webp') ? '.webp'
+          : '.png';
+
+        if (b.source.type === 'base64' && b.source.data) {
+          // Base64 image — save directly to disk
+          const filename = `img-${Date.now()}-${this.pendingMedia.length}${ext}`;
+          const filePath = path.join(mediaDir, filename);
+          fs.writeFileSync(filePath, Buffer.from(b.source.data, 'base64'));
+
+          this.pendingMedia.push({ type: 'image', filePath, mimeType });
+          console.log(`[AgentManager] Saved image: ${filePath}`);
+        } else if (b.source.type === 'url' && b.source.url) {
+          // URL image — download and save to disk
+          const filename = `img-${Date.now()}-${this.pendingMedia.length}${ext}`;
+          const filePath = path.join(mediaDir, filename);
+
+          // Fire-and-forget download; image will be available for Telegram sync
+          fetch(b.source.url)
+            .then(res => res.ok ? res.arrayBuffer() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then(buf => {
+              fs.writeFileSync(filePath, Buffer.from(buf));
+              console.log(`[AgentManager] Downloaded image: ${filePath}`);
+            })
+            .catch(err => console.error('[AgentManager] Failed to download image:', err));
+
+          this.pendingMedia.push({ type: 'image', filePath, mimeType });
+        }
+      } catch (err) {
+        console.error('[AgentManager] Failed to save image block:', err);
+      }
+    }
+  }
+
+  /**
+   * Extract screenshot file paths from tool result blocks.
+   * The browser tool saves full-res screenshots and includes the path in its result JSON.
+   */
+  private extractScreenshotPaths(block: unknown): void {
+    try {
+      const b = block as { content?: unknown };
+      if (!b.content) return;
+
+      if (Array.isArray(b.content)) {
+        // Extract image blocks from tool result content (e.g. computer_use screenshots)
+        this.extractImageBlocks(b.content);
+
+        // Also check text blocks for file paths
+        for (const part of b.content) {
+          const p = part as { type?: string; text?: string };
+          if (p.type === 'text' && p.text) {
+            const match = p.text.match(/saved to (\/[^\s"]+\/screenshot-\d+\.png)/);
+            if (match && fs.existsSync(match[1])) {
+              if (!this.pendingMedia.some(m => m.filePath === match[1])) {
+                this.pendingMedia.push({ type: 'image', filePath: match[1], mimeType: 'image/png' });
+                console.log(`[AgentManager] Found screenshot in tool result: ${match[1]}`);
+              }
+            }
+          }
+        }
+      } else if (typeof b.content === 'string') {
+        const match = b.content.match(/saved to (\/[^\s"]+\/screenshot-\d+\.png)/);
+        if (match && fs.existsSync(match[1])) {
+          if (!this.pendingMedia.some(m => m.filePath === match[1])) {
+            this.pendingMedia.push({ type: 'image', filePath: match[1], mimeType: 'image/png' });
+            console.log(`[AgentManager] Found screenshot in tool result: ${match[1]}`);
+          }
+        }
+      }
+    } catch {
+      // Ignore parsing errors
+    }
   }
 
   /**
@@ -922,10 +1489,34 @@ pty_exec(command="htop", timeout=30000)
     this.emit('status', status);
   }
 
-  // Track active subagents
-  private activeSubagents: Map<string, { type: string; description: string }> = new Map();
+  // Track active subagents per session
+  private activeSubagentsBySession: Map<string, Map<string, { type: string; description: string }>> = new Map();
+  // Track background tasks per session
+  private backgroundTasksBySession: Map<string, Map<string, { type: string; description: string; toolUseId: string }>> = new Map();
+
+  private getActiveSubagents(sessionId: string): Map<string, { type: string; description: string }> {
+    let map = this.activeSubagentsBySession.get(sessionId);
+    if (!map) {
+      map = new Map();
+      this.activeSubagentsBySession.set(sessionId, map);
+    }
+    return map;
+  }
+
+  private getBackgroundTasks(sessionId: string): Map<string, { type: string; description: string; toolUseId: string }> {
+    let map = this.backgroundTasksBySession.get(sessionId);
+    if (!map) {
+      map = new Map();
+      this.backgroundTasksBySession.set(sessionId, map);
+    }
+    return map;
+  }
 
   private processStatusFromMessage(message: unknown): void {
+    const sessionId = getCurrentSessionId();
+    const activeSubagents = this.getActiveSubagents(sessionId);
+    const backgroundTasks = this.getBackgroundTasks(sessionId);
+
     // Handle tool use from assistant messages
     const msg = message as { type?: string; subtype?: string; message?: { content?: unknown } };
     if (msg.type === 'assistant') {
@@ -936,6 +1527,58 @@ pty_exec(command="htop", timeout=30000)
             const rawName = block.name as string;
             const toolName = this.formatToolName(rawName);
             const toolInput = this.formatToolInput(block.input);
+            const blockInput = block.input as Record<string, unknown>;
+            const toolUseId = (block.id as string) || `bg-${Date.now()}`;
+
+            // Detect background tasks (Bash or Task with run_in_background)
+            if (blockInput?.run_in_background === true) {
+              const bgId = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              const description = (rawName === 'Bash'
+                ? (blockInput.command as string)?.slice(0, 60)
+                : (blockInput.description as string) || (blockInput.prompt as string)?.slice(0, 60)
+              ) || rawName;
+
+              backgroundTasks.set(bgId, { type: rawName, description, toolUseId });
+              console.log(`[AgentManager] Background task started: ${rawName} - ${description} (${backgroundTasks.size} active)`);
+
+              this.emitStatus({
+                type: 'background_task_start',
+                sessionId,
+                backgroundTaskId: bgId,
+                backgroundTaskDescription: description,
+                backgroundTaskCount: backgroundTasks.size,
+                toolName: rawName,
+                message: `background: ${description}`,
+              });
+            }
+
+            // Detect TaskOutput (checking on background tasks)
+            if (rawName === 'TaskOutput') {
+              this.emitStatus({
+                type: 'background_task_output',
+                sessionId,
+                backgroundTaskId: blockInput.task_id as string,
+                backgroundTaskCount: backgroundTasks.size,
+                message: 'checking background task...',
+              });
+            }
+
+            // Detect TaskStop/KillBash — remove bg task from tracking
+            // Note: SDK task IDs don't match our toolUseIds, so remove oldest matching type
+            if (rawName === 'TaskStop' || rawName === 'KillBash') {
+              const firstKey = backgroundTasks.keys().next().value;
+              if (firstKey) {
+                backgroundTasks.delete(firstKey);
+                console.log(`[AgentManager] Background task removed via ${rawName}: ${firstKey} (${backgroundTasks.size} remaining)`);
+                this.emitStatus({
+                  type: 'background_task_end',
+                  sessionId,
+                  backgroundTaskId: firstKey,
+                  backgroundTaskCount: backgroundTasks.size,
+                  message: 'background task stopped',
+                });
+              }
+            }
 
             // Check if this is a Task (subagent) tool
             if (rawName === 'Task') {
@@ -944,22 +1587,55 @@ pty_exec(command="htop", timeout=30000)
               const agentType = input.subagent_type || 'general';
               const description = input.description || input.prompt?.slice(0, 50) || 'working on it';
 
-              this.activeSubagents.set(agentId, { type: agentType, description });
+              activeSubagents.set(agentId, { type: agentType, description });
 
               this.emitStatus({
                 type: 'subagent_start',
+                sessionId,
                 agentId,
                 agentType,
                 toolInput: description,
-                agentCount: this.activeSubagents.size,
+                agentCount: activeSubagents.size,
                 message: this.getSubagentMessage(agentType),
+              });
+            } else if (rawName === 'TeammateTool') {
+              const input = block.input as { name?: string; team_name?: string; description?: string };
+              this.emitStatus({
+                type: 'teammate_start',
+                sessionId,
+                teammateName: input.name,
+                teamName: input.team_name,
+                toolName,
+                toolInput: input.description || input.name || 'spawning teammate',
+                message: `rallying ${input.name || 'a teammate'}`,
+              });
+            } else if (rawName === 'SendMessage') {
+              const input = block.input as { to?: string; type?: string; message?: string };
+              this.emitStatus({
+                type: 'teammate_message',
+                sessionId,
+                teammateName: input.to,
+                toolName,
+                toolInput: input.message?.slice(0, 80) || '',
+                message: input.type === 'broadcast' ? 'broadcasting to the squad' : `messaging ${input.to || 'teammate'}`,
+              });
+            } else if (rawName === 'Bash' && this.isPocketCliCommand(block.input)) {
+              const pocketName = this.formatPocketCommand(block.input);
+              this.emitStatus({
+                type: 'tool_start',
+                sessionId,
+                toolName: pocketName,
+                toolInput,
+                message: `batting at ${pocketName}...`,
+                isPocketCli: true,
               });
             } else {
               this.emitStatus({
                 type: 'tool_start',
+                sessionId,
                 toolName,
                 toolInput,
-                message: `Using ${toolName}...`,
+                message: `batting at ${toolName}...`,
               });
             }
           }
@@ -973,32 +1649,38 @@ pty_exec(command="htop", timeout=30000)
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block?.type === 'tool_result') {
+            // Extract screenshot paths and images from tool results
+            this.extractScreenshotPaths(block);
+
             // Check if any subagents completed
-            if (this.activeSubagents.size > 0) {
+            if (activeSubagents.size > 0) {
               // Remove one subagent (we don't have exact ID matching, so remove oldest)
-              const firstKey = this.activeSubagents.keys().next().value;
+              const firstKey = activeSubagents.keys().next().value;
               if (firstKey) {
-                this.activeSubagents.delete(firstKey);
+                activeSubagents.delete(firstKey);
               }
 
-              if (this.activeSubagents.size > 0) {
+              if (activeSubagents.size > 0) {
                 // Still have active subagents
                 this.emitStatus({
                   type: 'subagent_update',
-                  agentCount: this.activeSubagents.size,
-                  message: `${this.activeSubagents.size} helper${this.activeSubagents.size > 1 ? 's' : ''} still working 🔄`,
+                  sessionId,
+                  agentCount: activeSubagents.size,
+                  message: `${activeSubagents.size} kitty${activeSubagents.size > 1 ? 'ies' : ''} still hunting`,
                 });
               } else {
                 this.emitStatus({
                   type: 'subagent_end',
+                  sessionId,
                   agentCount: 0,
-                  message: 'helpers done, processing... ✨',
+                  message: 'squad done! cleaning up...',
                 });
               }
             } else {
               this.emitStatus({
                 type: 'tool_end',
-                message: 'got it, thinking... 💭',
+                sessionId,
+                message: 'caught it! processing...',
               });
             }
           }
@@ -1009,69 +1691,111 @@ pty_exec(command="htop", timeout=30000)
     // Handle system messages
     if (msg.type === 'system') {
       if (msg.subtype === 'init') {
-        this.emitStatus({ type: 'thinking', message: 'Initializing...' });
+        this.emitStatus({ type: 'thinking', sessionId, message: 'waking up from a nap...' });
+      } else if (msg.subtype === 'status') {
+        const statusMsg = msg as { status?: string };
+        if (statusMsg.status === 'compacting') {
+          console.log('[AgentManager] SDK auto-compaction triggered');
+          this.emitStatus({ type: 'thinking', sessionId, message: 'compacting context...' });
+        }
+      } else if (msg.subtype === 'compact_boundary') {
+        const compactMsg = msg as { compact_metadata?: { trigger: string; pre_tokens: number } };
+        const meta = compactMsg.compact_metadata;
+        console.log(`[AgentManager] SDK compaction complete: trigger=${meta?.trigger}, pre_tokens=${meta?.pre_tokens}`);
+      } else if (msg.subtype === 'task_notification') {
+        const taskMsg = msg as { task_id?: string; status?: string; summary?: string };
+        const taskStatus = taskMsg.status;
+        if (taskStatus === 'completed' || taskStatus === 'failed' || taskStatus === 'stopped') {
+          // Remove oldest tracked bg task (SDK task IDs don't map to our internal IDs)
+          const firstKey = backgroundTasks.keys().next().value;
+          if (firstKey) {
+            backgroundTasks.delete(firstKey);
+            console.log(`[AgentManager] Background task ${taskStatus} (notification): removed ${firstKey} (${backgroundTasks.size} remaining)`);
+            this.emitStatus({
+              type: 'background_task_end',
+              sessionId,
+              backgroundTaskId: firstKey,
+              backgroundTaskCount: backgroundTasks.size,
+              message: `background task ${taskStatus}`,
+            });
+          } else {
+            console.log(`[AgentManager] Background task ${taskStatus} (notification): ${taskMsg.task_id} (not tracked)`);
+          }
+        }
       }
     }
   }
 
   private getSubagentMessage(agentType: string): string {
     const messages: Record<string, string> = {
-      'Explore': 'sent out a scout to explore 🔭',
-      'Plan': 'calling in the architect 📐',
-      'Bash': 'spawning a terminal wizard 🧙',
-      'general-purpose': 'summoning a helper 🤖',
+      'Explore': 'sent a curious kitten to explore',
+      'Plan': 'calling in the architect cat',
+      'Bash': 'summoning a terminal tabby',
+      'general-purpose': 'summoning a helper kitty',
     };
-    return messages[agentType] || `spawning ${agentType} agent 🚀`;
+    return messages[agentType] || `summoning ${agentType} cat friend`;
   }
 
   private formatToolName(name: string): string {
-    // Fun, casual tool names that match PA's vibe
+    // Fun, cat-themed tool names that match PA's vibe
     const friendlyNames: Record<string, string> = {
       // SDK built-in tools
-      Read: 'peeking at this file 👀',
-      Write: 'writing stuff down ✍️',
-      Edit: 'tweaking some code',
-      Bash: 'running terminal magic 🪄',
-      Glob: 'hunting for files 🔍',
+      Read: 'sniffing this file',
+      Write: 'scratching notes down',
+      Edit: 'pawing at some code',
+      Bash: 'hacking at the terminal',
+      Glob: 'hunting for files',
       Grep: 'digging through code',
-      WebSearch: 'googling it rn',
-      WebFetch: 'grabbing that page',
-      Task: 'summoning a helper 🧙',
+      WebSearch: 'prowling the web',
+      WebFetch: 'fetching that page',
+      Task: 'summoning a helper kitty',
       NotebookEdit: 'editing notebook',
 
       // Memory tools
-      remember: 'saving this to the brain 🧠',
-      forget: 'yeeting from memory',
-      list_facts: 'checking what i know',
-      memory_search: 'searching the archives',
+      remember: 'stashing in my cat brain',
+      forget: 'knocking it off the shelf',
+      list_facts: 'checking my memories',
+      memory_search: 'sniffing through archives',
 
       // Browser tool
-      browser: 'doing browser things 🌐',
+      browser: 'pouncing on browser',
 
       // Computer use tool
-      computer: 'taking over the desktop 🖥️',
+      computer: 'walking on the keyboard',
 
       // Scheduler tools
-      schedule_task: 'setting a reminder ⏰',
+      schedule_task: 'setting an alarm meow',
       list_scheduled_tasks: 'checking the schedule',
-      delete_scheduled_task: 'nuking that reminder',
+      delete_scheduled_task: 'knocking that off',
 
       // macOS tools
-      notify: 'sending a ping 🔔',
-      pty_exec: 'running fancy terminal stuff',
+      notify: 'sending a meow',
 
       // Task tools
-      task_add: 'adding to the todo list ✅',
+      task_add: 'adding to the hunt list',
       task_list: 'checking your tasks',
-      task_complete: 'marking it done 🎉',
-      task_delete: 'removing that task',
-      task_due: 'checking what\'s due',
+      task_complete: 'caught it!',
+      task_delete: 'batting that away',
+      task_due: 'sniffing what\'s due',
 
       // Calendar tools
-      calendar_add: 'adding to calendar 📅',
+      calendar_add: 'marking territory',
       calendar_list: 'checking the calendar',
       calendar_upcoming: 'seeing what\'s coming up',
-      calendar_delete: 'removing that event',
+      calendar_delete: 'scratching that out',
+
+      // Agent Teams tools
+      TeammateTool: 'rallying the squad',
+      TeamCreate: 'rallying the squad',
+      SendMessage: 'passing a note',
+      TaskCreate: 'creating a team task',
+      TaskGet: 'checking task details',
+      TaskUpdate: 'updating team task',
+      TaskList: 'listing team tasks',
+      TaskOutput: 'checking background task',
+      TaskStop: 'stopping background task',
+      BashOutput: 'checking background command',
+      KillBash: 'killing background command',
     };
     return friendlyNames[name] || name;
   }
@@ -1123,155 +1847,36 @@ pty_exec(command="htop", timeout=30000)
     }
     if (inp.text) return `"${(inp.text as string).slice(0, 40)}"`;
 
+    // Agent Teams tools
+    if (inp.to && inp.message) return `→ ${inp.to}: ${(inp.message as string).slice(0, 60)}`;
+    if (inp.name && inp.team_name) return `${inp.name} in ${inp.team_name}`;
+    if (inp.name) return inp.name as string;
+
     return '';
   }
 
-  private async runCompaction(sessionId: string = 'default'): Promise<void> {
-    if (!this.memory) return;
-
-    console.log('[AgentManager] Running compaction for session:', sessionId);
-
-    // Before compaction, extract and save important facts from recent messages
-    await this.extractFactsBeforeCompaction(sessionId);
-
-    const { maxContextTokens } = getTokenLimits();
-    await this.memory.getConversationContext(maxContextTokens, sessionId);
-    const stats = this.memory.getStats(sessionId);
-    console.log(`[AgentManager] Compaction complete. Now at ${stats.estimatedTokens} tokens`);
+  private isPocketCliCommand(input: unknown): boolean {
+    if (!input || typeof input !== 'object') return false;
+    const command = (input as Record<string, unknown>).command;
+    if (typeof command !== 'string') return false;
+    return command.trimStart().startsWith('pocket');
   }
 
-  /**
-   * Extract important facts from recent conversation before compaction
-   */
-  private async extractFactsBeforeCompaction(sessionId: string = 'default'): Promise<void> {
-    if (!this.memory) return;
-
-    try {
-      const query = await loadSDK();
-      if (!query) return;
-
-      // Get recent messages that haven't been processed for facts
-      const recentMessages = this.memory.getRecentMessages(30, sessionId);
-      if (recentMessages.length < 5) return;
-
-      const conversationText = recentMessages
-        .map(m => `${m.role.toUpperCase()}: ${m.content}`)
-        .join('\n\n');
-
-      const extractionPrompt = `Analyze this conversation and extract important facts about the user that should be saved to long-term memory. Only extract concrete, specific information - not general conversation topics.
-
-Focus on:
-- Personal info (name, location, job, etc.)
-- Preferences and opinions
-- Projects and goals
-- Important dates or deadlines
-- Relationships and people mentioned
-- Decisions made
-
-For each fact, output in this exact format (one per line):
-FACT|category|subject|content
-
-Categories: user_info, preferences, projects, people, work, notes, decisions
-
-Example:
-FACT|user_info|name|John Smith
-FACT|work|employer|Works at Acme Corp as a software engineer
-FACT|preferences|coffee|Prefers oat milk lattes
-
-If no important facts are found, output: NO_FACTS
-
-Conversation:
-${conversationText}`;
-
-      const options: SDKOptions = {
-        model: 'claude-haiku-4-5-20251001',
-        maxTurns: 1,
-        abortController: new AbortController(),
-        tools: [],
-        persistSession: false,
-      };
-
-      const queryResult = query({ prompt: extractionPrompt, options });
-      let response = '';
-
-      for await (const message of queryResult) {
-        response = this.extractFromMessage(message, response);
-      }
-
-      if (!response || response.includes('NO_FACTS')) {
-        console.log('[AgentManager] No new facts extracted before compaction');
-        return;
-      }
-
-      // Parse and save facts
-      const lines = response.split('\n').filter(line => line.startsWith('FACT|'));
-      let savedCount = 0;
-
-      for (const line of lines) {
-        const parts = line.split('|');
-        if (parts.length >= 4) {
-          const [, category, subject, ...contentParts] = parts;
-          const content = contentParts.join('|').trim();
-
-          if (category && subject && content) {
-            this.memory.saveFact(category.trim(), subject.trim(), content);
-            savedCount++;
-          }
-        }
-      }
-
-      if (savedCount > 0) {
-        console.log(`[AgentManager] Extracted ${savedCount} facts before compaction`);
-      }
-    } catch (error) {
-      console.error('[AgentManager] Fact extraction before compaction failed:', error);
-      // Don't block compaction on fact extraction failure
-    }
-  }
-
-  private async createSummary(messages: Message[]): Promise<string> {
-    if (messages.length === 0) {
-      return '';
-    }
-
-    const conversationText = messages
-      .map(m => `${m.role.toUpperCase()}: ${m.content}`)
-      .join('\n\n---\n\n');
-
-    try {
-      const query = await loadSDK();
-      if (!query) throw new Error('Failed to load SDK');
-
-      const summaryPrompt = `Summarize this conversation concisely, preserving key facts about the user (name, preferences, work), important decisions, ongoing tasks, and context needed to continue the conversation:\n\n${conversationText}`;
-
-      const options: SDKOptions = {
-        model: 'claude-haiku-4-5-20251001',
-        maxTurns: 1,
-        abortController: new AbortController(),
-        tools: [],
-        persistSession: false,
-      };
-
-      const queryResult = query({ prompt: summaryPrompt, options });
-      let summary = '';
-
-      for await (const message of queryResult) {
-        summary = this.extractFromMessage(message, summary);
-      }
-
-      console.log(`[AgentManager] Created summary of ${messages.length} messages`);
-      return summary || `Previous conversation (${messages.length} messages) summarized.`;
-    } catch (error) {
-      console.error('[AgentManager] Summarization failed:', error);
-
-      const userMessages = messages.filter(m => m.role === 'user');
-      const snippets = userMessages
-        .slice(-10)
-        .map(m => m.content.slice(0, 100))
-        .join('; ');
-
-      return `Previous conversation (${messages.length} messages). Topics discussed: ${snippets}`;
-    }
+  private formatPocketCommand(input: unknown): string {
+    if (!input || typeof input !== 'object') return 'running pocket cli';
+    const command = ((input as Record<string, unknown>).command as string) || '';
+    const parts = command.trimStart().split(/\s+/);
+    const subcommand = parts[1] || '';
+    const categories: Record<string, string> = {
+      news: 'fetching the latest news',
+      utility: 'running pocket utility',
+      knowledge: 'checking the knowledge base',
+      dev: 'querying dev tools',
+      commands: 'listing pocket commands',
+      setup: 'configuring pocket',
+      integrations: 'checking integrations',
+    };
+    return categories[subcommand] || 'running pocket cli';
   }
 
   /**
@@ -1296,32 +1901,6 @@ ${conversationText}`;
       // No timezone configured - use system local time
       const normalized = timestamp.replace(' ', 'T');
       return new Date(normalized);
-    }
-  }
-
-  /**
-   * Format a message timestamp for display in conversation context
-   * Shows relative time for recent messages, date for older ones
-   */
-  private formatMessageTimestamp(timestamp: string): string {
-    try {
-      const date = this.parseDbTimestamp(timestamp);
-      const now = new Date();
-      const diffMs = now.getTime() - date.getTime();
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
-
-      // Very recent: show relative time
-      if (diffMins < 1) return 'just now';
-      if (diffMins < 60) return `${diffMins}m ago`;
-      if (diffHours < 24) return `${diffHours}h ago`;
-      if (diffDays < 7) return `${diffDays}d ago`;
-
-      // Older: show date
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    } catch {
-      return '';
     }
   }
 
@@ -1400,8 +1979,15 @@ ${conversationText}`;
 
   // ============ Public API ============
 
-  getStats(sessionId?: string): ReturnType<MemoryManager['getStats']> | null {
-    return this.memory?.getStats(sessionId) || null;
+  getStats(sessionId?: string): (ReturnType<MemoryManager['getStats']> & { contextTokens?: number; contextWindow?: number }) | null {
+    const stats = this.memory?.getStats(sessionId);
+    if (!stats) return null;
+    const contextUsage = sessionId ? this.contextUsageBySession.get(sessionId) : undefined;
+    return {
+      ...stats,
+      contextTokens: contextUsage?.contextTokens,
+      contextWindow: contextUsage?.contextWindow,
+    };
   }
 
   clearConversation(sessionId?: string): void {
@@ -1434,6 +2020,7 @@ ${conversationText}`;
   }
 
   cleanup(): void {
+    this.closeAllPersistentSessions();
     closeBrowserManager();
     console.log('[AgentManager] Cleanup complete');
   }
