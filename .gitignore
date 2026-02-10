@@ -12,3 +12,46 @@ dist/
 config.json
 release/
 *.cer
+
+# === PERSONAL INFORMATION - NEVER COMMIT ===
+# Added 2026-02-09 for privacy protection
+
+# Your custom configuration
+.custom-config/
+config/identity-custom.ts
+config/instructions-custom.ts
+
+# Personal documents and data
+~/Documents/Pocket-agent/
+*.local.md
+*-private.md
+*-personal.*
+
+# API keys and secrets
+*.key
+*.secret
+*.token
+.anthropic-key
+.openai-key
+
+# Custom environment files
+.env.*
+!.env.example
+
+# Database with your conversations
+*.sqlite
+*.sqlite3
+pocket-agent.db
+memory.db
+
+# Mac user-specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Personal notes and logs
+NOTES.md
+TODO-private.md
+.custom-notes/
+logs/
+
