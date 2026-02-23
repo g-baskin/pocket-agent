@@ -3,6 +3,22 @@ import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+
+// Load .env file from project root (secrets not committed to git)
+const envPath = path.join(app.isPackaged ? path.dirname(process.execPath) : path.join(__dirname, '..', '..'), '.env');
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#')) {
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim();
+        if (!process.env[key]) process.env[key] = val;
+      }
+    }
+  }
+}
 import { AgentManager } from '../agent';
 import { MemoryManager } from '../memory';
 import { createScheduler, CronScheduler } from '../scheduler';
@@ -21,6 +37,7 @@ import { getBrowserManager } from '../browser';
 import { isMacOS, getPermissionsStatus, openPermissionSettings } from '../permissions';
 import type { PermissionType } from '../permissions';
 import { initializeUpdater, setupUpdaterIPC, setSettingsWindow } from './updater';
+import { DriveSync } from '../sync';
 import cityTimezones from 'city-timezones';
 
 // Handle EPIPE errors gracefully (happens when stdout pipe is closed)
@@ -579,6 +596,28 @@ function updateTrayMenu(): void {
       label: 'Tweaks...',
       click: () => openSettingsWindow(),
       accelerator: 'CmdOrCtrl+,',
+    },
+    {
+      label: 'Sync with Drive',
+      click: async () => {
+        if (!SettingsManager.getBoolean('sync.drive.enabled')) {
+          showNotification('Drive Sync', 'Enable Drive Sync in Settings first');
+          return;
+        }
+        showNotification('Drive Sync', 'Syncing...');
+        const os = require('os');
+        const localRoot = path.join(os.homedir(), 'Documents', 'Pocket-agent');
+        const driveSync = new DriveSync({
+          localRoot,
+          driveFolderName: SettingsManager.get('sync.drive.folderName') || 'Pocket Agent',
+        });
+        const result = await driveSync.sync();
+        if (result.success) {
+          showNotification('Drive Sync', `Done: ${result.filesUploaded} up, ${result.filesDownloaded} down`);
+        } else {
+          showNotification('Drive Sync', `Failed: ${result.error}`);
+        }
+      },
     },
     {
       label: 'Check for Updates...',
@@ -2082,6 +2121,33 @@ function setupIPC(): void {
     await openPermissionSettings(type);
   });
 
+  // Drive Sync
+  ipcMain.handle('sync:drive', async () => {
+    if (!SettingsManager.getBoolean('sync.drive.enabled') ||
+        !SettingsManager.getBoolean('google.workspace.enabled')) {
+      return { success: false, error: 'Drive sync is not enabled' };
+    }
+    const localRoot = path.join(require('os').homedir(), 'Documents', 'Pocket-agent');
+    const driveSync = new DriveSync({
+      localRoot,
+      driveFolderName: SettingsManager.get('sync.drive.folderName') || 'Pocket Agent',
+    });
+    return driveSync.sync();
+  });
+
+  ipcMain.handle('sync:driveStatus', async () => {
+    const manifestPath = path.join(require('os').homedir(), 'Documents', 'Pocket-agent', '.sync-manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        return { lastSync: manifest.lastSyncTime, fileCount: Object.keys(manifest.files).length };
+      } catch {
+        return { lastSync: null, fileCount: 0 };
+      }
+    }
+    return { lastSync: null, fileCount: 0 };
+  });
+
 }
 
 // ============ Agent Lifecycle ============
@@ -2119,8 +2185,23 @@ async function initializeAgent(): Promise<void> {
   }
 
   // Build tools config from settings
+  const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+
+  // Google Workspace MCP server (Gmail, Drive, Docs, Sheets, Slides, Calendar, Contacts)
+  if (SettingsManager.getBoolean('google.workspace.enabled')) {
+    mcpServers['google-workspace'] = {
+      command: 'npx',
+      args: ['-y', '@dguido/google-workspace-mcp'],
+      env: {
+        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+        GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
+      },
+    };
+    console.log('[Main] Google Workspace MCP server enabled');
+  }
+
   const toolsConfig = {
-    mcpServers: {},
+    mcpServers,
     computerUse: {
       enabled: false,
       dockerized: true,
@@ -2635,6 +2716,28 @@ app.whenReady().then(async () => {
       console.log(`[Main] Global shortcut ${shortcut} registered`);
     } else {
       console.warn(`[Main] Failed to register global shortcut ${shortcut}`);
+    }
+
+    // Drive sync on startup (before agent init so it gets latest files)
+    if (SettingsManager.getBoolean('sync.drive.enabled') &&
+        SettingsManager.getBoolean('sync.drive.syncOnStartup') &&
+        SettingsManager.getBoolean('google.workspace.enabled')) {
+      console.log('[Main] Starting Drive sync...');
+      try {
+        const os = require('os');
+        const localRoot = path.join(os.homedir(), 'Documents', 'Pocket-agent');
+        const driveSync = new DriveSync({
+          localRoot,
+          driveFolderName: SettingsManager.get('sync.drive.folderName') || 'Pocket Agent',
+        });
+        await Promise.race([
+          driveSync.sync(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Sync timeout (30s)')), 30000)),
+        ]);
+        console.log('[Main] Drive sync complete');
+      } catch (error) {
+        console.warn('[Main] Drive sync failed (non-fatal):', error);
+      }
     }
 
     // Initialize agent if not first run (window will be shown after splash completes)

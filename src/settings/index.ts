@@ -490,6 +490,54 @@ export const SETTINGS_SCHEMA: SettingDefinition[] = [
     description: 'Any other information about yourself',
     type: 'textarea',
   },
+  // Google Workspace MCP settings
+  {
+    key: 'google.workspace.enabled',
+    defaultValue: 'true',
+    encrypted: false,
+    category: 'integrations',
+    label: 'Google Workspace',
+    description: 'Enable Google Workspace MCP (Gmail, Drive, Docs, Sheets, Slides, Calendar, Contacts)',
+    type: 'boolean',
+  },
+  // Drive Sync settings
+  {
+    key: 'sync.drive.enabled',
+    defaultValue: 'false',
+    encrypted: false,
+    category: 'integrations',
+    label: 'Drive Sync',
+    description: 'Sync workspace files (instructions, commands) with Google Drive',
+    type: 'boolean',
+  },
+  {
+    key: 'sync.drive.folderName',
+    defaultValue: 'Pocket Agent',
+    encrypted: false,
+    category: 'integrations',
+    label: 'Drive Folder Name',
+    description: 'Name of the Google Drive folder to sync with',
+    type: 'string',
+  },
+  {
+    key: 'sync.drive.syncOnStartup',
+    defaultValue: 'true',
+    encrypted: false,
+    category: 'integrations',
+    label: 'Sync on Startup',
+    description: 'Automatically sync with Drive when app starts',
+    type: 'boolean',
+  },
+  // Updates settings
+  {
+    key: 'updates.autoCheck',
+    defaultValue: 'false',
+    encrypted: false,
+    category: 'updates',
+    label: 'Auto-check for Updates',
+    description: 'Automatically check for updates on startup',
+    type: 'boolean',
+  },
 ];
 
 class SettingsManagerClass {

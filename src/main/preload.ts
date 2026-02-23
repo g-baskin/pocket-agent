@@ -88,6 +88,10 @@ contextBridge.exposeInMainWorld('pocketAgent', {
   saveInstructions: (content: string) => ipcRenderer.invoke('customize:saveInstructions', content),
   getInstructionsPath: () => ipcRenderer.invoke('customize:getInstructionsPath'),
 
+  // Drive Sync
+  syncDrive: () => ipcRenderer.invoke('sync:drive'),
+  syncDriveStatus: () => ipcRenderer.invoke('sync:driveStatus'),
+
   // Location and timezone
   lookupLocation: (query: string) => ipcRenderer.invoke('location:lookup', query),
   getTimezones: () => ipcRenderer.invoke('timezone:list'),
