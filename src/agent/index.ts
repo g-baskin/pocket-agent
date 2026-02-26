@@ -301,6 +301,7 @@ type SDKOptions = {
   settingSources?: ('project' | 'user')[];
   canUseTool?: CanUseToolCallback;  // Pre-tool-use validation callback
   env?: { [envVar: string]: string | undefined };  // Environment variables for Claude Code process
+  betas?: string[];  // API beta feature flags (e.g. 'pdfs-2024-09-25')
   hooks?: {
     PreToolUse?: Array<{ hooks: PreToolUseHookCallback[] }>;
     UserPromptSubmit?: Array<{ hooks: UserPromptSubmitHookCallback[] }>;
@@ -802,12 +803,17 @@ class AgentManagerClass extends EventEmitter {
       // OAuth token expired mid-session — the subprocess can't refresh it, so we must
       // kill the session, refresh the token, and retry with a new subprocess.
       const isAuthFailed = turnResult.errors?.some(e => e.includes('authentication_failed'));
-      if (isStaleSession || isInvalidThinking || isUnknownResumeError || isSessionCrash || isAuthFailed) {
+      // Document content block error — PDF was read in a previous turn, and on resume the
+      // API rejects the 'document' tag if the beta header wasn't sent. Clear session and retry.
+      const isDocumentTypeError = turnResult.errors?.some(e =>
+        e.includes("Input tag 'document'") || e.includes('does not match any of the expected tags'));
+      if (isStaleSession || isInvalidThinking || isUnknownResumeError || isSessionCrash || isAuthFailed || isDocumentTypeError) {
         const staleId = this.sdkSessionIdBySession.get(sessionId);
         const reason = isStaleSession ? 'stale SDK session'
           : isInvalidThinking ? 'invalid thinking signature'
           : isUnknownResumeError ? 'unknown resume error'
           : isAuthFailed ? 'OAuth token expired'
+          : isDocumentTypeError ? 'document content block rejected (PDF beta missing)'
           : 'session crash';
         console.warn(`[AgentManager] ${reason} detected (${staleId}), retrying...`);
 
@@ -1292,6 +1298,7 @@ class AgentManagerClass extends EventEmitter {
       model: this.model,
       cwd: this.workspace,
       maxTurns: 100,
+      betas: ['pdfs-2024-09-25'],  // Enable document content blocks for PDF support
       ...(isAnthropicModel && { thinking: thinkingEntry.thinking }),
       ...(isAnthropicModel && thinkingEntry.effort && { effort: thinkingEntry.effort }),
       tools: { type: 'preset', preset: 'claude_code' },
@@ -1550,6 +1557,29 @@ You can send native desktop notifications:
 notify(title="Task Complete", body="Your download has finished")
 notify(title="Reminder", body="Meeting in 5 minutes", urgency="critical")
 \`\`\`
+
+### Creating PDFs & Documents
+You can create PDFs using pandoc (installed at /usr/local/bin/pandoc) with weasyprint as the PDF engine.
+
+Workflow:
+1. Write content to a markdown file using the Write tool
+2. Convert to PDF using Bash:
+
+\`\`\`bash
+pandoc input.md -o output.pdf --pdf-engine=weasyprint
+\`\`\`
+
+Options:
+- Add a title/metadata: \`--metadata title="My Document"\`
+- Custom margins: \`--variable margin-top=1in --variable margin-left=1in\`
+- Custom CSS styling: \`--css style.css\` (write a CSS file first, then reference it)
+- Table of contents: \`--toc\`
+- From HTML: \`pandoc input.html -o output.pdf --pdf-engine=weasyprint\`
+
+For styled PDFs, write a CSS file first then pass it with --css. The markdown can include
+tables, lists, headings, code blocks, bold, italic — all render properly in the PDF.
+
+Always save generated PDFs to your workspace directory.
 
 ### Limitations
 - Cannot send SMS or make calls

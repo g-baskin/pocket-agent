@@ -4,19 +4,25 @@ import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
-// Load .env file from project root (secrets not committed to git)
-const envPath = path.join(app.isPackaged ? path.dirname(process.execPath) : path.join(__dirname, '..', '..'), '.env');
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed && !trimmed.startsWith('#')) {
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx > 0) {
-        const key = trimmed.slice(0, eqIdx).trim();
-        const val = trimmed.slice(eqIdx + 1).trim();
-        if (!process.env[key]) process.env[key] = val;
+// Load .env file (check multiple locations)
+const envCandidates = [
+  path.join(require('os').homedir(), '.config', 'pocket-agent', '.env'),
+  path.join(app.isPackaged ? path.dirname(process.execPath) : path.join(__dirname, '..', '..'), '.env'),
+];
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          const val = trimmed.slice(eqIdx + 1).trim();
+          if (!process.env[key]) process.env[key] = val;
+        }
       }
     }
+    break;
   }
 }
 import { AgentManager } from '../agent';
